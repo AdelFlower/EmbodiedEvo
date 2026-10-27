@@ -194,7 +194,7 @@ def main(argv=None):
             # Preserve native diagnostics before removing the private Kit home,
             # including native exit(0)/abort paths that bypass Python exceptions.
             if run.exists():
-                for path in bridge.glob("kit/logs/Kit/Isaac-Sim/*/*.log"):
+                for path in (bridge / "kit/logs").rglob("*.log"):
                     with contextlib.suppress(OSError):
                         with path.open("rb") as stream:
                             stream.seek(max(0, path.stat().st_size - 2 * 1024**2))
@@ -210,6 +210,8 @@ def main(argv=None):
                     process.wait(timeout=5)
             if stderr_reader is not None:
                 stderr_reader.join(timeout=1)
+            if run.exists() and stderr_tail:
+                (run / "native-stderr-tail.log").write_bytes(b"".join(stderr_tail))
             if incoming is not None:
                 os.close(incoming)
                 os.close(outgoing)

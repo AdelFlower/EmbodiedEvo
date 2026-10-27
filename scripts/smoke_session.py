@@ -46,7 +46,7 @@ call("exec")
 status = call("status")
 p.write_text(
     "obs = get_observation()\\n"
-    "step({k: v for k, v in obs['state'].items() if k.endswith('joint_state')})\n"
+    "step({k: v for k, v in obs['state'].items() if k.endswith('joint_state')})\\n"
 )
 action = call("exec")
 assert action["native_steps_used"] > status["native_steps_used"]
@@ -112,6 +112,7 @@ def main(argv=None):
             parser.error("Regular task smoke uses only its configured Playground seed")
         seed = cfg.playground.seed
     client = f"BASELINE = {cfg.baseline!r}\n" + CLIENT
+    compile(client, "smoke-client", "exec")
     cfg = replace(cfg, agent=replace(cfg.agent, network="none"))
     run = args.run_dir.resolve()
     run.mkdir(parents=True, exist_ok=False)
