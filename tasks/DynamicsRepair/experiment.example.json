@@ -1,0 +1,17 @@
+{
+  "agent_task": "RoboDojo",
+  "simulator_python": ".venv-robodojo/bin/python",
+  "seed": 0,
+  "target_friction_scale": 0.3,
+  "action_limit": 500,
+  "budgets": {
+    "executions": 100,
+    "episodes": 20,
+    "target_episodes": 8,
+    "actions": 10000
+  },
+  "execution_timeout_sec": 1200,
+  "agent_timeout_sec": 0,
+  "startup_timeout_sec": 1200,
+  "feedback_fps": 25
+}

@@ -1,0 +1,22 @@
+{
+  "Rigid": {
+    "cube": [{
+      "category": "cube", "category_idx": 4, "label": "red_cube", "relative_plane": "Table",
+      "default_pos": [0.2, -0.13, 0.7775], "default_ori": [1.0, 0.0, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0], "need_check_stable": true,
+      "physics": {"type": "rigid", "mass": 0.35, "static_friction": 0.8, "dynamic_friction": 0.6, "restitution": 0.0},
+      "visual": {}
+    }],
+    "plate": [{
+      "category": "plate", "category_idx": 2, "label": "plate", "relative_plane": "Table",
+      "default_pos": [-0.02, -0.08, 0.7828], "default_ori": [1.0, 0.0, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0], "need_check_stable": true,
+      "physics": {"type": "rigid", "mass": 0.5, "static_friction": 0.8, "dynamic_friction": 0.6, "restitution": 0.0},
+      "visual": {}
+    }]
+  },
+  "Room": {"default": "Simple_Room_nolight", "default_pos": [0.0, 0.0, 0.0], "default_rot": [1.0, 0.0, 0.0, 0.0], "scale": [0.5, 0.5, 0.5]},
+  "Table": {"default": "material_0122", "static": true, "scale": [1.4, 1.1, 0.05], "default_pos": [0.0, -0.05, 0.74], "default_ori": [1.0, 0.0, 0.0, 0.0]},
+  "Ground": {"geometry": "cube", "thickness": 0.1, "axis": "Z", "default_pos": [0.0, 0.0, 0.0], "materials": {"type": "mdl", "default": "material_0564", "random": false}, "physics_material": {"static_friction": 1.0, "dynamic_friction": 1.0, "restitution": 0.0, "friction_combine_mode": "multiply", "restitution_combine_mode": "multiply", "compliant_contact_stiffness": 0.0, "compliant_contact_damping": 0.0}},
+  "Background": {"intensity": 1000, "category_name": "brown_photostudio_02_4k.hdr"}
+}

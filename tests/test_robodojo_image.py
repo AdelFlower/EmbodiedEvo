@@ -60,6 +60,37 @@ class ImageRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Pin the simulator image"):
             self.command()
 
+    def test_dynamics_worker_mounts_private_socket_workspace_and_trial_records(self):
+        phase = self.root / "runs/202610280000_dynamics/source"
+        trial = phase / "trials/000001"
+        workspace = phase / "workspace"
+        raw_observations = phase / "raw_observations"
+        socket_dir = self.root / "private-worker"
+        self.args = [
+            "-m", "orchestrator.dynamics_worker", "--run-dir", str(trial),
+            "--workspace", str(workspace), "--socket", str(socket_dir / "worker.sock"),
+        ]
+        command = self.command()
+        self.assertIn(f"{trial.parent}:{trial.parent}", command)
+        self.assertIn(f"{workspace}:{workspace}", command)
+        self.assertIn(f"{raw_observations}:{raw_observations}", command)
+        self.assertTrue(raw_observations.is_dir())
+        self.assertNotIn(f"{phase}:{phase}", command)
+        self.assertIn(f"{socket_dir}:{socket_dir}", command)
+        self.assertIn(f"--run-dir {trial}", command[-1])
+        self.assertIn(f"--workspace {workspace}", command[-1])
+        self.assertIn(f"--socket {socket_dir}/worker.sock", command[-1])
+        self.assertNotIn("--fd", command[-1])
+        self.assertNotIn("exec 3>", command[-1])
+        with patch.object(robodojo_image, "REPO", self.root), patch.dict(
+            os.environ, {"CUDA_VISIBLE_DEVICES": "4"}
+        ):
+            apptainer = apptainer_command(
+                self.args, self.profile, self.root / "bridge", self.root / "image.sif"
+            )
+        for path in (trial.parent, workspace, raw_observations, socket_dir):
+            self.assertIn(f"{path}:{path}", apptainer)
+
     def test_preserves_slurm_cpu_allocation_in_docker(self):
         with patch.dict(os.environ, {'EMBODIEDEVO_SIMULATOR_CPUSET': '0-3,128-131'}):
             command = self.command()
@@ -87,7 +118,9 @@ class ImageRuntimeTests(unittest.TestCase):
                 str(self.root / 'runs/trial'), '--gpu', '4', '--cpu-threads', '8']
         with patch.object(robodojo_image, 'REPO', self.root), patch.dict(
                 os.environ, {'CUDA_VISIBLE_DEVICES': '4'}):
-            command = apptainer_command(argv, self.profile, self.root/'bridge', self.root/'image.sif')
+            command = apptainer_command(
+                argv, self.profile, self.root/'bridge', self.root/'image.sif'
+            )
         self.assertIn('--nvccli', command)
         self.assertIn('--containall', command)
         self.assertIn(f'{self.root}/vendor/robodojo:/workspace/RoboDojo:ro', command)

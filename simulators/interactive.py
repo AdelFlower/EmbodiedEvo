@@ -2,6 +2,8 @@
 
 Keep persistent globals, physics budgets and the four primitives.
 Remove simulator objects and filesystem/import capabilities from submitted code.
+Use f-strings or percent formatting; format/format_map methods are unavailable.
+Class patterns support explicit keyword attributes, not positional attributes.
 """
 
 from __future__ import annotations
@@ -121,12 +123,20 @@ def numerical_numpy():
 
 
 NUMPY = numerical_numpy()
+MATH = SimpleNamespace(**{name: getattr(math, name) for name in dir(math)
+                          if not name.startswith("_")})
 
 
 def numerical_import(name, globals=None, locals=None, fromlist=(), level=0):
     if level or name not in {"numpy", "math"}:
         raise ImportError("Only numpy and math are available in robot snippets")
-    return NUMPY if name == "numpy" else math
+    module = NUMPY if name == "numpy" else MATH
+    # A plain ``import numpy as np`` statement passes fromlist=None.
+    for attribute in fromlist or ():
+        _validate_attribute(attribute)
+        if attribute != "*" and not hasattr(module, attribute):
+            raise ImportError(f"Unavailable numerical import: {attribute}")
+    return module
 
 
 SAFE_BUILTINS = {
@@ -171,6 +181,12 @@ SAFE_BUILTINS = {
 SAFE_BUILTINS["__import__"] = numerical_import
 
 
+def _validate_attribute(name: str) -> None:
+    # String replacement fields can resolve attributes outside the submitted AST.
+    if name.startswith("_") or name in {"tofile", "dump", "reset", "format", "format_map"}:
+        raise ValueError(f"Unavailable attribute in robot snippet: {name}")
+
+
 def validate_snippet(code: str) -> None:
     tree = ast.parse(code, filename="<interactive-snippet>")
     forbidden = {
@@ -195,11 +211,18 @@ def validate_snippet(code: str) -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and (node.id in forbidden or node.id.startswith("_")):
             raise ValueError(f"Unavailable name in robot snippet: {node.id}")
-        if isinstance(node, ast.Attribute) and (
-            node.attr.startswith("_") or node.attr in {"tofile", "dump", "reset"}
-        ):
-            raise ValueError(f"Unavailable attribute in robot snippet: {node.attr}")
+        if isinstance(node, ast.Attribute):
+            _validate_attribute(node.attr)
+        if isinstance(node, ast.MatchClass):
+            # Positional patterns obtain unchecked attribute names from __match_args__.
+            if node.patterns:
+                raise ValueError("Positional class patterns are unavailable in robot snippets")
+            for name in node.kwd_attrs:
+                _validate_attribute(name)
         if isinstance(node, ast.Import | ast.ImportFrom):
             names = [n.name for n in node.names] if isinstance(node, ast.Import) else [node.module]
             if any(n not in {"numpy", "math"} for n in names) or getattr(node, "level", 0):
                 raise ValueError("Only numpy and math imports are supported")
+            if isinstance(node, ast.ImportFrom):
+                for imported in node.names:
+                    _validate_attribute(imported.name)

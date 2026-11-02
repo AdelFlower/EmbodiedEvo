@@ -62,6 +62,13 @@ def docker_command(argv, profile, bridge, name):
     if socket_arg := option(argv, "--socket"):
         folder = Path(socket_arg).resolve().parent
         args += ["-v", f"{folder}:{folder}"]
+    if workspace_arg := option(argv, "--workspace"):
+        workspace = Path(workspace_arg).resolve()
+        # Native frames are archived beside the workspace, outside the agent mount.
+        raw_observations = workspace.parent / "raw_observations"
+        raw_observations.mkdir(parents=True, exist_ok=True)
+        args += ["-v", f"{workspace}:{workspace}",
+                 "-v", f"{raw_observations}:{raw_observations}"]
     cache = Path(profile["cache_dir"])
     cache.mkdir(parents=True, exist_ok=True)
     args += ["-v", f"{cache}:/tmp/.nv"]
@@ -97,10 +104,9 @@ def docker_command(argv, profile, bridge, name):
         environment["EMBODIEDEVO_ROBODOJO_VIDEO_THREADS"] = str(profile["video_threads"])
     if profile.get("renderer_barrier"):
         environment["EMBODIEDEVO_ROBODOJO_RENDERER_BARRIER"] = "1"
-    if threads := option(argv, "--cpu-threads"):
-        if int(threads) > 0:
-            # USD can be imported by image_entrypoint before the worker runs.
-            environment["PXR_WORK_THREAD_LIMIT"] = threads
+    if (threads := option(argv, "--cpu-threads")) and int(threads) > 0:
+        # USD can be imported by image_entrypoint before the worker runs.
+        environment["PXR_WORK_THREAD_LIMIT"] = threads
     for key, value in environment.items():
         args += ["-e", f"{key}={value}"]
     inner = list(argv)
@@ -180,10 +186,8 @@ def main(argv=None):
             stderr_reader.start()
             while process.poll() is None:
                 if incoming is None:
-                    try:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
                         process.wait(timeout=0.2)
-                    except subprocess.TimeoutExpired:
-                        pass
                 elif select.select([incoming], [], [], 0.2)[0]:
                     os.write(outgoing, os.read(incoming, 65536))
             if incoming is not None:
@@ -195,10 +199,9 @@ def main(argv=None):
             # including native exit(0)/abort paths that bypass Python exceptions.
             if run.exists():
                 for path in (bridge / "kit/logs").rglob("*.log"):
-                    with contextlib.suppress(OSError):
-                        with path.open("rb") as stream:
-                            stream.seek(max(0, path.stat().st_size - 2 * 1024**2))
-                            (run / "native-kit-tail.log").write_bytes(stream.read())
+                    with contextlib.suppress(OSError), path.open("rb") as stream:
+                        stream.seek(max(0, path.stat().st_size - 2 * 1024**2))
+                        (run / "native-kit-tail.log").write_bytes(stream.read())
             with contextlib.suppress(subprocess.SubprocessError):
                 subprocess.run(
                     ["docker", "rm", "-f", name], stdin=subprocess.DEVNULL,

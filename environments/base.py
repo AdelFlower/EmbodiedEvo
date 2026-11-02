@@ -24,6 +24,14 @@ MAX_CODE_LENGTH = 8 * 1024 * 1024
 CODE_CHARSET = frozenset(string.printable)
 
 
+class SourceValidationError(ValueError):
+    """Submitted source was rejected before entering the simulator adapter."""
+
+
+class SourceTypeError(SourceValidationError, TypeError):
+    """Keep the public TypeError contract for non-string source."""
+
+
 def _code_space() -> spaces.Text:
     """Return a fresh action space for one environment instance."""
 
@@ -78,13 +86,15 @@ class Environment(Env):
         """Validate the one and only action type at the bridge boundary."""
 
         if not isinstance(code, str):
-            raise TypeError(f"action must be Python source as str, got {type(code).__name__}")
+            raise SourceTypeError(f"action must be Python source as str, got {type(code).__name__}")
         if not code:
-            raise ValueError("action must contain non-empty Python source")
+            raise SourceValidationError("action must contain non-empty Python source")
         if len(code) > MAX_CODE_LENGTH:
-            raise ValueError(f"action exceeds {MAX_CODE_LENGTH} characters")
+            raise SourceValidationError(f"action exceeds {MAX_CODE_LENGTH} characters")
         if not self.action_space.contains(code):
-            raise ValueError("action contains characters outside the declared code space")
+            raise SourceValidationError(
+                "action contains characters outside the declared code space"
+            )
         return code
 
     def next_step_index(self) -> int:

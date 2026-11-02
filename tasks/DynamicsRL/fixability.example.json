@@ -1,0 +1,53 @@
+{
+  "simulator_python": ".venv-robodojo/bin/python",
+  "startup_timeout": 1200,
+  "step_timeout": 120,
+  "seed": 0,
+  "num_envs": 2,
+  "learner_threads": 4,
+  "demonstration_attempts": 192,
+  "demonstration_noise": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      0.005,
+      2.0
+    ],
+    [
+      0.01,
+      4.0
+    ]
+  ],
+  "bc_updates": 50000,
+  "bc_learning_rate": 0.0003,
+  "bc_batch_size": 512,
+  "log_std": [
+    -3.9,
+    -4.0,
+    -3.5,
+    -4.5,
+    -4.5,
+    -4.5,
+    -3.0
+  ],
+  "reward_scale": 0.1,
+  "n_steps": 512,
+  "batch_size": 512,
+  "n_epochs": 5,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_range": 0.2,
+  "target_kl": 0.03,
+  "max_update_kl": 0.05,
+  "max_grad_norm": 0.5,
+  "actor_learning_rate": 5e-05,
+  "value_learning_rate": 0.0003,
+  "value_warmup_rollouts": 2,
+  "rollouts_per_round": 24,
+  "max_rounds": 12,
+  "dev_episodes": 20,
+  "stop_online_success_rate": 0.9,
+  "max_train_hours": 10
+}

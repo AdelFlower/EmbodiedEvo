@@ -89,6 +89,30 @@ source snapshot. Set `EMBODIEDEVO_USE_RECIPE=0` before preparing a new run to om
 that supplied knowledge. The choice and recipe source are recorded per run.
 See [the protocol](docs/PROTOCOL.md) and [running and evaluation](docs/RUNNING.md).
 
+The separate [dynamics diagnosis and policy repair experiment](docs/DYNAMICS_REPAIR.md)
+adds a red-cube-to-plate task, editable diagnostic copies, a fixed target environment,
+and paired repair conditions. Start it by letting the coding agent learn its
+grasp-and-placement policy in the source environment:
+
+```bash
+.venv/bin/python -m orchestrator.dynamics_repair run \
+  --config tasks/DynamicsRepair/experiment.example.json \
+  --run-dir "runs/$(date +%Y%m%d%H%M)_dynamics_run" --gpu 0
+```
+
+The runner freezes and validates that policy before testing transfer to the fixed
+target and starting the repair branches. Development calibration with supplied
+policies is optional; the example configuration fixes the target friction scale
+at `0.3` (`0.25` when omitted) before the run and hides it from the agent. The experiment does not contribute to
+the original RoboDojo Test scores. Real contact behavior, target recoverability,
+and repair performance require separate GPU and model evidence.
+
+The separate [neural-policy training experiment](docs/DYNAMICS_RL.md) uses the successful
+cube-to-plate code policy to collect demonstrations, pretrains a state-based network,
+and improves it with SAC. It trains with independent cube/plate position variation
+and evaluates a frozen network in fresh held-out scenes. This experiment uses object
+ground truth and does not contribute to the original RoboDojo Test scores.
+
 ## Source map
 
 | Path | Role |

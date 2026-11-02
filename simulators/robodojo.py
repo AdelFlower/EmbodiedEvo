@@ -7,6 +7,7 @@ import contextlib
 import copy
 import os
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,10 @@ import numpy as np
 from simulators.execution import CodeTask
 from simulators.robodojo_api import RoboDojoLowLevelApi
 from simulators.robodojo_layouts import ROOT, decode_scene
+
+
+class InvalidControlAction(ValueError):
+    """Native action validation failed before any physics could advance."""
 
 
 class _NoPolicyServer:
@@ -60,7 +65,7 @@ class RoboDojoTask(CodeTask):
                 raise ValueError("PhysX solver iteration overrides must be integers in [1, 255]")
         self.task_name = task_name
         self.scene_seed = 0 if seed is None else seed
-        self.bank, self.ordinal, self.layout_path = decode_scene(task_name, self.scene_seed)
+        self.bank, self.ordinal, self.layout_path = self._scene_identity(task_name, self.scene_seed)
         if ROOT.is_symlink() or not ROOT.is_dir():
             raise RuntimeError("Provision the repository-local vendor/robodojo checkout first")
         sys.path[:0] = [str(ROOT), str(ROOT / "XPolicyLab")]
@@ -90,12 +95,25 @@ class RoboDojoTask(CodeTask):
             self.close()
             raise
 
+    def _scene_identity(self, task_name, seed):
+        return decode_scene(task_name, seed)
+
+    def _load_task_config(self):
+        from utils.load_file import load_yaml
+
+        return load_yaml(str(ROOT / "task/RoboDojo/config" / (self.task_name + ".yml")))
+
+    def _create_eval_env(self, eval_module, cfg):
+        return eval_module.create_eval_env(
+            cfg, self.app, resume_state={"save_dir": self._temporary.name, "details": {}}
+        )
+
     def _create_native(self):
         from env.camera_manager.capture.render_sync import add_zero_delay_kit_args
         from isaaclab.app import AppLauncher
         from utils.load_file import load_yaml
 
-        task_cfg = load_yaml(str(ROOT / "task/RoboDojo/config" / (self.task_name + ".yml")))
+        task_cfg = self._load_task_config()
         monitor_enabled = bool(task_cfg.get("Articulation"))
         if monitor_enabled:
             from src.eval_client.physx_warning_monitor import get_monitor
@@ -109,6 +127,17 @@ class RoboDojoTask(CodeTask):
         args.headless, args.enable_cameras, args.device = True, True, "cuda:0"
         args.kit_args = os.environ.get("EMBODIEDEVO_ROBODOJO_KIT_ARGS", args.kit_args)
         add_zero_delay_kit_args(args)
+        from simulators.robodojo_experience import prepare_experience
+
+        source_experience = ROOT / "third_party/IsaacLab/apps/isaaclab.python.kit"
+        experience = prepare_experience(
+            source_experience,
+            Path(self._temporary.name) / "isaaclab.python.kit",
+            Path(sysconfig.get_path("purelib")) / "isaacsim/exts/isaacsim.asset.importer.urdf"
+            / "config/extension.toml",
+        )
+        if experience != source_experience:
+            args.experience = str(experience)
         self.app = AppLauncher(args).app
         if os.environ.get("EMBODIEDEVO_ROBODOJO_RENDERER_BARRIER") == "1":
             from simulators.robodojo_startup import wait_for_renderer
@@ -121,6 +150,7 @@ class RoboDojoTask(CodeTask):
 
         if video_threads := int(os.environ.get("EMBODIEDEVO_ROBODOJO_VIDEO_THREADS", "0")):
             import utils.save_file as video_module
+
             from simulators.robodojo_video import configure_video_threads
 
             configure_video_threads(video_module, video_threads)
@@ -157,11 +187,7 @@ class RoboDojoTask(CodeTask):
         cfg, _ = process_config(process_randomization(cfg), self.task_name)
         cfg.camera.default_frequency = eval_cfg["observation"]["collect_freq"]
         with patch.object(eval_module, "WsModelClient", _NoPolicyServer):
-            self.native = eval_module.create_eval_env(
-                cfg,
-                self.app,
-                resume_state={"save_dir": self._temporary.name, "details": {}},
-            )
+            self.native = self._create_eval_env(eval_module, cfg)
         from simulators.robodojo_capture import install_capture_cleanup
 
         install_capture_cleanup(self.native.capture_manager)
@@ -278,7 +304,9 @@ class RoboDojoTask(CodeTask):
         disable_collisions = getattr(self, "disable_retired_collisions", False)
         retired = set(rigid)
         if disable_collisions:
-            retired.update(id(obj) for objects in manager._geometry_objects for obj in objects.values())
+            retired.update(
+                id(obj) for objects in manager._geometry_objects for obj in objects.values()
+            )
 
         def retire(obj):
             # Native CPU reload hides/disables old rigid bodies without deleting
@@ -403,25 +431,28 @@ class RoboDojoTask(CodeTask):
     def control_step(self, action):
         if self.done:
             return self.transition(float(self.success))
-        if not isinstance(action, dict) or not action:
-            raise ValueError("RoboDojo step requires a native joint or ee action dictionary")
-        action = {key: np.asarray(value, dtype=np.float64) for key, value in action.items()}
-        if any(value.ndim != 1 or not np.isfinite(value).all() for value in action.values()):
-            raise ValueError("RoboDojo actions must contain finite one-dimensional arrays")
-        # Native validation has no physics side effects. Reject malformed actions early.
-        self.native.validate_action_dict(action)
-        mode = self.native.get_action_type(action)
-        state = self.public_observation()["state"]
-        required = {
-            key
-            for key in state
-            if key.endswith("_ee_joint_state")
-            or key == "ee_joint_state"
-            or (mode == "joint" and key.endswith("arm_joint_state"))
-            or (mode == "ee" and key.endswith("ee_pose"))
-        }
-        if set(action) != required:
-            raise ValueError(f"Expected {mode} action keys {sorted(required)}")
+        try:
+            if not isinstance(action, dict) or not action:
+                raise ValueError("RoboDojo step requires a native joint or ee action dictionary")
+            action = {key: np.asarray(value, dtype=np.float64) for key, value in action.items()}
+            if any(value.ndim != 1 or not np.isfinite(value).all() for value in action.values()):
+                raise ValueError("RoboDojo actions must contain finite one-dimensional arrays")
+            # Native validation has no physics side effects. Reject malformed actions early.
+            self.native.validate_action_dict(action)
+            mode = self.native.get_action_type(action)
+            state = self.public_observation()["state"]
+            required = {
+                key
+                for key in state
+                if key.endswith("_ee_joint_state")
+                or key == "ee_joint_state"
+                or (mode == "joint" and key.endswith("arm_joint_state"))
+                or (mode == "ee" and key.endswith("ee_pose"))
+            }
+            if set(action) != required:
+                raise ValueError(f"Expected {mode} action keys {sorted(required)}")
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise InvalidControlAction(str(exc)) from exc
         try:
             with robodojo_cwd():
                 previous = int(self.native.take_action_cnt[0])

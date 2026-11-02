@@ -36,6 +36,7 @@ htmlcov/
 .DS_Store
 /.vscode/
 /.idea/
+tests/*
 
 # Operator credentials and site-specific settings
 .env

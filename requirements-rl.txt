@@ -1,0 +1,4 @@
+# Install a CPU PyTorch wheel first; Isaac/CUDA stay in the pinned simulator image.
+stable-baselines3==2.9.2
+torch==2.8.0
+matplotlib==3.10.8

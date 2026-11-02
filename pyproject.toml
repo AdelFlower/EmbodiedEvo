@@ -15,6 +15,7 @@ dependencies = ["gymnasium>=1.0", "numpy", "pillow", "pyyaml", "imageio[ffmpeg]"
 [project.optional-dependencies]
 dev = ["ruff>=0.4"]
 policy = ["websockets==15.0.1"]
+rl = ["stable-baselines3==2.9.2", "torch>=2.8,<3", "matplotlib>=3.9"]
 
 [project.scripts]
 embodiedevo = "orchestrator.__main__:main"

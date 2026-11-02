@@ -2,8 +2,14 @@
 
 Submitted Python runs inside one persistent host simulator. Only the four functions
 below are environment primitives. `np` provides the documented restricted NumPy
-operations; imports, files, networking and simulator internals are unavailable in
-submitted code. Local workspace Python may inspect exported observations.
+operations. Restricted `numpy` and `math` imports are supported, including public
+numerical members imported with `from ... import ...`. Private attributes, other
+modules, files, networking and simulator internals are unavailable in submitted
+code. Local workspace Python may inspect exported observations.
+Use f-strings or `%` formatting for text. The `format` and `format_map` methods
+are unavailable in submitted code.
+Class patterns support public keyword attributes; positional class patterns are
+unavailable. Mapping and sequence patterns remain supported.
 
 ## get_instruction()
 

@@ -92,6 +92,8 @@ class CodeTask(Environment):
 
     def _step(self, code):
         stdout, stderr = io.StringIO(), io.StringIO()
+        # Preserve partial program output if a host watchdog interrupts execution.
+        self._program_output = (stdout, stderr)
         ok = True
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
