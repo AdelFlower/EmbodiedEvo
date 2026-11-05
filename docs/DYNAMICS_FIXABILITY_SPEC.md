@@ -253,14 +253,14 @@ close partial episodes first. Starting the next round resets the `VecEnv`.
   "num_envs": 2,
   "learner_threads": 4,
   "demonstration_attempts": 192,
-  "demonstration_noise": [[0.0, 0.0], [0.005, 2.0], [0.01, 4.0]],
+  "demonstration_noise": [[0.0, 0.0], [0.002, 0.5], [0.003, 1.0]],
   "bc_updates": 50000,
   "bc_learning_rate": 0.0003,
   "bc_batch_size": 512,
-  "log_std": [-3.9, -4.0, -3.5, -4.5, -4.5, -4.5, -3.0],
+  "log_std": [-4.83, -4.92, -4.47, -5.89, -5.89, -5.89, -3.91],
   "reward_scale": 0.1,
-  "n_steps": 512,
-  "batch_size": 512,
+  "n_steps": 4096,
+  "batch_size": 1024,
   "n_epochs": 5,
   "gamma": 0.99,
   "gae_lambda": 0.95,
@@ -271,7 +271,7 @@ close partial episodes first. Starting the next round resets the `VecEnv`.
   "actor_learning_rate": 0.00005,
   "value_learning_rate": 0.0003,
   "value_warmup_rollouts": 2,
-  "rollouts_per_round": 24,
+  "rollouts_per_round": 3,
   "max_rounds": 12,
   "dev_episodes": 20,
   "stop_online_success_rate": 0.9,
@@ -279,15 +279,41 @@ close partial episodes first. Starting the next round resets the `VecEnv`.
 }
 ```
 
-`log_std` corresponds to about 5 mm of position noise per axis, 2° of rotation and 0.05 of
-normalised gripper command. `load_config` validates types and the obvious ranges once:
+`log_std` corresponds to 2 mm of position noise per axis, 0.5° of rotation and 0.02 of
+normalised gripper command. Revised 2026-11-02 before any training. The first demonstration
+run (`runs/202611021335_fx_demos`, at 5 mm/2° and 10 mm/4°) showed that the clean teacher
+succeeds 64/64 but only 5/64 and 0/64 under those noise levels. The scan
+`runs/202611021436_fx_teacher_noise_scan` gave these results:
+
+| Noise | Teacher success |
+|---|---|
+| 5 mm position | 6/20 |
+| 2 mm position | 20/20 |
+| 2° rotation | 17/20 |
+| 0.5° rotation | 19/20 |
+| 2 mm + 0.5° | 19/20 |
+| 1 mm + 0.25° | 20/20 |
+
+The chosen σ is the largest tested level that the teacher survives at about 95%, and the
+demonstration noise levels were changed to match it. `load_config` validates types and the obvious ranges once:
 
 - positive counts;
 - `num_envs ≥ 1`;
 - 7 `log_std` values;
 - noise levels as non-negative pairs.
 
-Capacity measured 2026-11-02: 1 simulator ≈ 9.5 actions/s, 2 ≈ 17.9 actions/s; 3 exceed 24 GB VRAM (≈ 7.5 GB each) and time out. The overseer therefore set `num_envs` 2 and, to keep rounds ≈ 25k actions, `rollouts_per_round` 24 and `max_rounds` 12 (≈ 295k actions per stage). Every other value is frozen
+Capacity measured 2026-11-02: 1 simulator ≈ 9.5 actions/s, 2 ≈ 17.9 actions/s; 3 exceed 24 GB VRAM (≈ 7.5 GB each) and time out. The overseer therefore set `num_envs` 2 and, to keep rounds ≈ 25k actions, `rollouts_per_round` 24 and `max_rounds` 12 (≈ 295k actions per stage).
+
+Revised again on 2026-11-02, during stage S3 and before stage A, so A still uses the same
+configuration as S. The first source run, `runs/202611021612_fx_source`, used `n_steps` 512,
+which gives 1,024 actions (about 3 episodes) per PPO update. Its stochastic online success
+fell from 66% to 21%, 6% and then 4% over rounds 1–4, while deterministic dev success went
+0 → 0 → 0 → 2/20.
+
+Almost every update hit the KL limit (clip fraction 0.25–0.3), so the policy random-walked on
+gradients estimated from 3 episodes. The overseer stopped the run and raised `n_steps` to
+4096 and `batch_size` to 1024, which gives 8,192 actions (about 25 episodes) per update.
+`rollouts_per_round` became 3, keeping rounds at about 24.6k actions. Every other value is frozen
 before stage S and applies unchanged to stage A.
 
 ## 10. Tests (CPU, `tests/test_dynamics_fixability.py`)

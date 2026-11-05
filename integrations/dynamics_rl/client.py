@@ -35,6 +35,7 @@ class SimulatorClient:
     def __init__(
         self, run_dir, *, parameters, gpu=0, mode="state", simulator_python=None,
         startup_timeout=1200.0, step_timeout=120.0,
+        worker_module="orchestrator.dynamics_rl_worker",
     ):
         self.run_dir = Path(run_dir).resolve()
         if not re.match(r"^\d{12}(?:_|$)", self.run_dir.name):
@@ -42,6 +43,7 @@ class SimulatorClient:
         if mode not in {"state", "render"}:
             raise ValueError("mode must be state or render")
         self.parameters = dict(parameters)
+        self.worker_module = worker_module
         for name, value in (("startup_timeout", startup_timeout), ("step_timeout", step_timeout)):
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -82,7 +84,7 @@ class SimulatorClient:
             listener.listen(1)
             listener.settimeout(0.2)
             command = [
-                str(self.interpreter), "-m", "orchestrator.dynamics_rl_worker",
+                str(self.interpreter), "-m", self.worker_module,
                 "--run-dir", str(self.run_dir), "--socket", str(self.socket_path),
                 "--gpu", str(self.gpu), "--mode", self.mode,
                 "--parameters", json.dumps(self.parameters),

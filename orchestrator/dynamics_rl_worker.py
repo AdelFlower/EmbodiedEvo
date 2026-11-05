@@ -141,13 +141,13 @@ class RLWorker:
             self._close_records()
 
 
-def run_worker(stream, run_dir, *, parameters, mode="state", builder=None):
+def run_worker(stream, run_dir, *, parameters, mode="state", builder=None, worker_class=RLWorker):
     env = worker = None
     run_dir = Path(run_dir)
     try:
         factory = DynamicsRLTask if builder is None else builder
         env = factory(mode=mode, settings=parameters)
-        worker = RLWorker(env, run_dir)
+        worker = worker_class(env, run_dir)
         send(stream, {"ok": True, "ready": True, "mode": mode,
                       "parameters": parameters})
         while True:

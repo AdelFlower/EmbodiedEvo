@@ -1,0 +1,87 @@
+{
+  "simulator_python": ".venv-robodojo/bin/python",
+  "startup_timeout": 1200,
+  "step_timeout": 120,
+  "seed": 0,
+  "num_envs": 2,
+  "cube_shift": [
+    0.03,
+    0.0
+  ],
+  "p0": {
+    "policy": "runs/202611032219_ft5b_bc/policy.pt",
+    "demos": "runs/202611032210_ft5b_demos_f100/demos.npz"
+  },
+  "source_parameters": {
+    "friction_scale": 1.0,
+    "mass_scale": 1.0,
+    "restitution": 0.0,
+    "gripper_scale": 1.0
+  },
+  "target_parameters": {
+    "friction_scale": 0.25,
+    "mass_scale": 1.0,
+    "restitution": 0.0,
+    "gripper_scale": 1.0
+  },
+  "parameter_ranges": {
+    "friction_scale": [
+      0.05,
+      2.0
+    ],
+    "mass_scale": [
+      0.25,
+      4.0
+    ],
+    "restitution": [
+      0.0,
+      1.0
+    ]
+  },
+  "eval_deterministic": 1,
+  "eval_stochastic": 1,
+  "required_successes": 27,
+  "budgets": {
+    "wall_hours": 1,
+    "rounds": 1,
+    "iterations_per_round": 4,
+    "iterations_total": 4,
+    "target_episodes": 4,
+    "diagnostic_episodes": 1
+  },
+  "training": {
+    "init_std": [
+      0.03,
+      0.03,
+      0.03,
+      0.1,
+      0.25
+    ],
+    "episodes_per_iter": 2,
+    "warmup_iterations": 2,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip": 0.2,
+    "epochs": 8,
+    "minibatch": 512,
+    "actor_lr": 0.0002,
+    "critic_lr": 0.0005,
+    "target_kl": 0.04,
+    "bc_weight": 1.0
+  },
+  "sandbox": {
+    "image": "embodiedevo-agent:latest",
+    "timeout": 120,
+    "memory_mb": 1024
+  },
+  "agent": {
+    "preset": "codex",
+    "model": "gpt-6-astra",
+    "reasoning_effort": "high",
+    "service_tier": "fast",
+    "image": "embodiedevo-agent:latest",
+    "network": "filtered",
+    "cpus": 4,
+    "memory_mb": 8192
+  }
+}

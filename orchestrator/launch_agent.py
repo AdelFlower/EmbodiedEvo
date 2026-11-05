@@ -24,7 +24,8 @@ AGENT_NETWORK = "embodiedevo-agent"
 
 
 def agent_argv(
-    preset: str, prompt: str, *, model: str | None = None, effort: str | None = None
+    preset: str, prompt: str, *, model: str | None = None, effort: str | None = None,
+    service_tier: str | None = None,
 ) -> list[str]:
     """The CLI invocation for a preset, inside the container.
 
@@ -37,6 +38,8 @@ def agent_argv(
             argv += ["-c", f'model="{model}"']
         if effort:
             argv += ["-c", f'model_reasoning_effort="{effort}"']
+        if service_tier:
+            argv += ["-c", f'service_tier="{service_tier}"']
         return [*argv, prompt]
     if preset == "claude":
         argv = ["claude", "--print", "--permission-mode", "acceptEdits"]
