@@ -7,11 +7,10 @@ import json
 import math
 from unittest.mock import patch
 
+from integrations.friction_rl.control import SCENE_PATH
 from simulators.dynamics_native import cube_material_values
-from simulators.robodojo import RoboDojoTask
-from simulators.vendor import REPO
+from simulators.robodojo import RoboDojoRuntime
 
-SCENE_PATH = REPO / "tasks/DynamicsRepair/scene.json"
 TASK_NAME = "red_cube_to_plate"
 
 
@@ -26,7 +25,7 @@ def experiment_settings(settings):
         **settings,
     }
     if values["task_name"] != TASK_NAME or values["seed"] != 0 or values["action_limit"] != 500:
-        raise ValueError("DynamicsRepair v1 uses red_cube_to_plate, seed=0, action_limit=500")
+        raise ValueError("DynamicsAdapt uses red_cube_to_plate, seed=0, action_limit=500")
     for key in ("friction_scale", "mass_scale", "restitution"):
         values[key] = float(values[key])
         if not math.isfinite(values[key]):
@@ -52,7 +51,7 @@ def scene_layout(settings):
     return layout
 
 
-class DynamicsTask(RoboDojoTask):
+class DynamicsTask(RoboDojoRuntime):
     def __init__(self, settings):
         self.settings = experiment_settings(settings)
         self.initial_snapshot = None
@@ -83,7 +82,7 @@ class DynamicsTask(RoboDojoTask):
 
             def get_seed_scene_info(self, seed):
                 if seed != 0:
-                    raise ValueError("DynamicsRepair owns one fixed scene")
+                    raise ValueError("DynamicsAdapt owns one fixed scene")
                 return copy.deepcopy(layout)
 
         task_class = make_task_class(self.settings)
@@ -125,18 +124,3 @@ class DynamicsTask(RoboDojoTask):
             "current_state": self.native.dynamics_snapshot(),
             "trajectory": copy.deepcopy(self.native.dynamics_trace),
         }
-
-    def private_scoring_snapshot(self):
-        return {
-            "schema": "dynamics-repair-score-v4",
-            "velocity_measurement": "physics_step_pose_delta_peak_v1",
-            "score": 100.0 if self.success else 0.0,
-            "normalized_score": float(self.success),
-            "success": self.success,
-            "partial_credit_supported": False,
-            "state": self.native.placement_scorer.snapshot(),
-        }
-
-
-def build_environment(settings: dict) -> DynamicsTask:
-    return DynamicsTask(settings)

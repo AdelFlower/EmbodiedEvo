@@ -25,7 +25,7 @@ def prepare_experience(source: Path, destination: Path, installed_extension: Pat
     adapted = adapted.replace("${app}", str(source.parent.resolve()))
     destination.write_text(adapted, encoding="utf-8")
     print(
-        "[EmbodiedEvo] Isaac Sim experience compatibility: "
+        "[DynamicsAdapt] Isaac Sim experience compatibility: "
         "isaacsim.asset.importer.urdf requested 2.4.31; using installed 2.4.30. "
         f"Source: {source}; selected experience: {destination}"
     )

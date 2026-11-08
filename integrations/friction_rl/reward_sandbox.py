@@ -12,7 +12,7 @@ import numpy as np
 
 from orchestrator.files import write_json
 
-SCRIPTS = Path(__file__).resolve().parents[2] / "tasks/FrictionAgent/Workspace/scripts"
+SCRIPTS = Path(__file__).resolve().parents[2] / "tasks/DynamicsAdapt/Workspace/scripts"
 TRACE_KEYS = ("commanded_ee_pose observed_ee_pose action closed grip_force_command right_grip_force "
               "gripper_opening right_finger_contacts contacts cube_position cube_quaternion plate_position "
               "initial_observed_ee_pose initial_cube_position initial_cube_quaternion "

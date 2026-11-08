@@ -1,54 +1,128 @@
-# Running RoboDojo
+# Running DynamicsAdapt
 
-Complete [installation](INSTALL.md) and [Codex API configuration](CODEX_API.md),
-then run from the repository root. Use an
-explicit new `--run-dir` for each experiment. Directory prefixes use
-`YYYYMMDDHHMM`; append a descriptive suffix to distinguish same-minute runs.
+Run from the repository root after [installation](INSTALL.md). The commands below
+use `.venv-rl/bin/dynamicsadapt`; `.venv-rl/bin/python -m orchestrator` is equivalent.
+Every experiment and P0 command requires an explicit timestamp-prefixed
+`--run-dir`. New runs use new directories; evaluation and summary address an
+existing run. Keep all evidence under `runs/`, outside Git.
 
-## Local Playground and Test
+## Prepare the configuration
+
+Copy `tasks/DynamicsAdapt/config.example.json` to a local configuration and set:
+
+- `p0.policy` and `p0.demos` to existing local FT5 weights and source demonstrations;
+- `simulator_python` to the provisioned `.venv-robodojo/bin/python` wrapper;
+- `agent.image` and `sandbox.image` to available thin Agent images;
+- `agent.model`, `reasoning_effort` and `service_tier` to the intended experiment settings.
+
+The example's historical P0 paths are references, not bundled artifacts. The
+current default is one scene, source friction 1.0 and target friction 0.25, four
+development episodes, 30 final episodes, and 27 required strict successes.
+[The protocol](PROTOCOL.md) defines the training, scoring, budget and isolation
+rules. Fix configuration before a new run; do not edit target physics to obtain a
+preferred outcome.
+
+## Optional P0 preparation
+
+Existing compatible P0 artifacts may be used directly. Otherwise collect source
+script demonstrations and fit the imitation policy with the P0 configuration.
+These commands use nominal source physics; they do not adapt to the target.
 
 ```bash
-RUN_DIR="runs/$(date +%Y%m%d%H%M)_stack_bowls"
-.venv/bin/embodiedevo run --task RoboDojo --env-task stack_bowls \
-  --run-dir "$RUN_DIR" --gpu 0
+P0_CONFIG=tasks/DynamicsAdapt/p0.example.json
+DEMO_RUN="runs/$(date +%Y%m%d%H%M)_p0_demos"
+.venv-rl/bin/dynamicsadapt p0 demos --config "$P0_CONFIG" \
+  --run-dir "$DEMO_RUN" --gpu 0
+BC_RUN="runs/$(date +%Y%m%d%H%M)_p0_bc"
+.venv-rl/bin/dynamicsadapt p0 bc --config "$P0_CONFIG" \
+  --demos "$DEMO_RUN/demos.npz" --run-dir "$BC_RUN"
+.venv-rl/bin/dynamicsadapt p0 evaluate --config "$P0_CONFIG" \
+  --policy "$BC_RUN/policy.pt" --episodes 30 \
+  --run-dir "runs/$(date +%Y%m%d%H%M)_p0_source_eval" --gpu 0
 ```
 
-`explore` and `test` can also be run separately against the same directory.
-The configured default is 25 Test scenes. `--test-scenes N` sets a run-specific
-count; use the same count for separate explore and test commands. Counts and
-task settings are pinned, so do not change them during resume. A small smoke or
-subset run is not a full benchmark evaluation.
+Use a separate evaluation run with `--stochastic` to inspect the policy under
+training exploration, and `--render` when raw videos are needed. Collection and
+evaluation need the GPU simulator; BC is CPU training. Preserve both the weights
+and their demonstration file and record these paths as the formal run's P0 inputs.
+There is no P0 search or PPO-training CLI in the minimal preparation tool.
+
+## Run, evaluate and summarize
 
 ```bash
-.venv/bin/embodiedevo test --task tasks_baseline/RoboDojo --env-task stack_bowls \
-  --run-dir "runs/$(date +%Y%m%d%H%M)_stack_bowls_baseline" --gpu 0
+CONFIG=/path/to/experiment.json
+RUN_DIR="runs/$(date +%Y%m%d%H%M)_dynamicsadapt"
+.venv-rl/bin/dynamicsadapt run --config "$CONFIG" --run-dir "$RUN_DIR" --gpu 0
+.venv-rl/bin/dynamicsadapt evaluate --run-dir "$RUN_DIR" --gpu 0
+.venv-rl/bin/dynamicsadapt summarize --run-dir "$RUN_DIR"
 ```
 
-The default templates explicitly select a model and reasoning effort; use values
-supported by your provider. No provider URL or key is included. Model credentials
-remain in an external CLI home.
+`run` freezes P0 and source demonstrations, records paired baseline rollouts, then
+starts the isolated Agent and experiment service. A successful train request
+includes automatic target deployment. The host applies the fixed selection rule.
+`evaluate` runs P0 and the selected network, without further training, using the
+configured deterministic/stochastic evaluation episodes. `summarize` derives the
+report from retained records and launches no simulator or model.
 
-## Native official evaluator
+The Agent uses `scripts/adapt.py` inside its workspace. Its instructions explain
+`status`, `probe`, `train`, `wait` and `submit`, reward programs and diagnosis fields.
+The host instructions in this document, including true target parameters, must
+not be copied into that workspace.
 
-After obtaining a frozen Playground run, use the
-[XPolicyLab integration](../integrations/robodojo_policy/README.md) to run the
-native evaluator. The direct session runner and native evaluator produce
-different report formats. Keep their provenance and scope explicit when
-comparing results. Full official scene counts and aggregation rules come from
-the selected upstream benchmark revision, not from a short local diagnostic.
+## Separate checks
 
-## Concurrency and output
+CPU tests, when the local suite is available (it is excluded from Git):
 
-Start with one simulator per GPU. `--test-gpus 0,1 --test-gpu-slots 1` enables
-bounded concurrent Test scenes on resources already assigned to you. The optional
-SIF route validates the selected physical GPU against the current Slurm allocation;
-no cluster scheduler or node list is shipped.
+```bash
+.venv-rl/bin/python -m unittest discover -s tests -v
+```
 
-Inspect the run's `protocol.json`, `resolved.json`, `runtime.json`, per-scene
-results, agent sessions and raw submission feedback. Ledgers and Test plans
-remain host-only. The repository ignores all run output.
+The scripted smoke uses real simulation and Docker reward evaluation but no model
+Agent. Update its P0/image paths as for the main configuration before running:
 
-If launching a command in the background, redirect stdin, stdout and stderr to
-`/dev/null`, or pass `subprocess.DEVNULL` for all three streams in Python. Use the
-run's existing status and feedback files for monitoring; do not create a separate
-launcher log. Stop only processes belonging to your own run.
+```bash
+SMOKE_RUN="runs/$(date +%Y%m%d%H%M)_dynamicsadapt_smoke"
+.venv-rl/bin/dynamicsadapt run --config tasks/DynamicsAdapt/smoke.json \
+  --scripted-agent tasks/DynamicsAdapt/smoke_agent.py --run-dir "$SMOKE_RUN" --gpu 0
+.venv-rl/bin/dynamicsadapt evaluate --run-dir "$SMOKE_RUN" --gpu 0
+```
+
+The smoke deliberately uses the true target parameters to test the reproduction
+gate and job lifecycle. It supplies no scientific diagnosis evidence.
+
+The researcher can separately test whether the training procedure can recover
+performance when given the true dynamics and an oracle reward:
+
+```bash
+.venv-rl/bin/dynamicsadapt trainability --config "$CONFIG" \
+  --parameters /path/to/source-parameters.json \
+  --reward tasks/DynamicsAdapt/oracle_reward.py --iterations 100 \
+  --run-dir "runs/$(date +%Y%m%d%H%M)_dynamicsadapt_trainability" --gpu 0
+```
+
+The parameter file is a JSON object of permitted source physics. This host-only
+check has its own run, costs and outcomes; it has no Agent and does not consume
+Agent budgets. Its weights, trajectories and logs must not initialize or inform
+the formal Agent. A failure describes the training procedure, not Agent diagnosis.
+
+## Records
+
+| Run path | Content |
+|---|---|
+| `config.json`, `networks/N000/policy.pt`, `prior/demos.npz` | Frozen configuration and initial policy/prior |
+| `baseline/{source,target}/` | Paired development rollout evidence |
+| `calibration/workspace/` | Public instructions, observations, Agent notes, rewards and submission |
+| `calibration/requests.jsonl`, `calibration/jobs/J*/` | Requests/refusals and retained job specifications/results |
+| `calibration/networks/N*/` | `policy.pt`, full `training.pt`, reward snapshot and iteration records |
+| `calibration/selection.json`, `diagnosis.json`, `agent_sessions/` | Host selection, Agent diagnosis and model sessions |
+| `evaluation/results.json`, `summary.json` | Frozen evaluation counts and derived report |
+
+Host episode folders retain traces and native records; public copies contain only
+whitelisted `trajectory.npz`, `result.json` and raw camera videos when available.
+Training exports include iteration metrics and final-iteration trajectories with
+the rewards actually used. `training.pt` preserves the model, both optimizers and
+cumulative counters; `policy.pt` is the inference state dictionary.
+
+Keep partial and failed evidence. Count incomplete planned episodes as failures,
+record actual resource use, and assess diagnosis separately from strict/lenient
+success. Never overwrite or retry an attempt automatically.

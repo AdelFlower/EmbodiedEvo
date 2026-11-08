@@ -1,7 +1,6 @@
-"""Build the agent CLI command and thin container for workspace sessions.
+"""Build the isolated DynamicsAdapt agent command and thin container.
 
-The session runner owns process lifecycle, the session socket, and read-only
-protocol/knowledge mounts. Start runs with ``python -m orchestrator``.
+The experiment owns process lifecycle and the private experiment socket.
 The simulator, vendor sources, task configuration and ledgers stay on the host.
 
 ``filtered`` uses a Docker bridge so the CLI can reach its model endpoint; it
@@ -20,7 +19,30 @@ from pathlib import Path
 
 CONTAINER_WORKSPACE = Path("/workspace")
 CONTAINER_HOME = Path("/home/agent")
-AGENT_NETWORK = "embodiedevo-agent"
+AGENT_NETWORK = "dynamicsadapt-agent"
+
+
+def experiment_command(agent, workspace, socket_dir, prompt):
+    """Mount only the experiment workspace, staged credentials and service socket."""
+    require_image(agent["image"])
+    if agent["network"] != "none":
+        ensure_network()
+    name = f"dynamicsadapt-{os.getpid()}-{time.time_ns()}"
+    argv = docker_argv(
+        workspace, stage_home(socket_dir.parent / "agent-home"),
+        adapt_for_docker(agent_argv(
+            agent["preset"], prompt, model=agent["model"], effort=agent["reasoning_effort"],
+            service_tier=agent["service_tier"]), preset=agent["preset"]),
+        image=agent["image"], network=agent["network"], cpus=agent["cpus"],
+        memory_mb=agent["memory_mb"], container_name=name,
+    )
+    mounts = ["--env", "EMBODIEDEVO_SOCKET=/run/embodiedevo/session.sock", "--mount",
+              f"type=bind,src={socket_dir},dst=/run/embodiedevo,readonly"]
+    for component in ("instruction.md", "nominal.json", "scripts", "observations"):
+        mounts += ["--mount", f"type=bind,src={workspace / component},dst=/workspace/{component},readonly"]
+    index = argv.index(agent["image"])
+    argv[index:index] = mounts
+    return name, argv
 
 
 def agent_argv(
@@ -41,12 +63,7 @@ def agent_argv(
         if service_tier:
             argv += ["-c", f'service_tier="{service_tier}"']
         return [*argv, prompt]
-    if preset == "claude":
-        argv = ["claude", "--print", "--permission-mode", "acceptEdits"]
-        if model:
-            argv += ["--model", model]
-        return [*argv, prompt]
-    raise ValueError(f"unknown preset {preset!r}; expected codex or claude")
+    raise ValueError(f"unknown preset {preset!r}; expected codex")
 
 
 def docker_argv(
@@ -60,16 +77,12 @@ def docker_argv(
     memory_mb: int,
     container_name: str | None = None,
 ) -> list[str]:
-    """Run the agent CLI in the thin workspace-only image.
-
-    The submitted program is deliberately *not* executed here: the host's
-    session server receives source snapshots through the session socket.
-    """
+    """Run the agent CLI in the thin workspace-only image."""
     if cpus <= 0 or memory_mb <= 0:
         raise ValueError("Docker CPU and memory limits must be positive")
     workspace = workspace.resolve()
     home = home.resolve()
-    name = container_name or f"embodiedevo-agent-{os.getpid()}-{time.time_ns()}"
+    name = container_name or f"dynamicsadapt-agent-{os.getpid()}-{time.time_ns()}"
     proxy_args = []
     proxy = (os.environ.get("EMBODIEDEVO_AGENT_HTTPS_PROXY")
              or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY"))
@@ -164,7 +177,7 @@ def _docker(argv: list[str]) -> subprocess.CompletedProcess[str]:
 
 def require_image(image: str) -> None:
     if shutil.which("docker") is None:
-        raise RuntimeError("docker not found; workspace sessions require Docker")
+        raise RuntimeError("docker not found; experiment agents require Docker")
     # Some Docker clients return 0 for templated `info` even when daemon access
     # is denied, yielding empty stdout. Do not misreport that as a missing image.
     daemon = _docker(["version", "--format", "{{.Server.Version}}"])
@@ -174,7 +187,7 @@ def require_image(image: str) -> None:
     if _docker(["image", "inspect", image]).returncode != 0:
         raise RuntimeError(
             f"agent image {image!r} is missing; prepare the thin CLI image "
-            "configured in task.toml (see docs/RUNNING.md)"
+            "configured in the experiment JSON (see docs/RUNNING.md)"
         )
 
 

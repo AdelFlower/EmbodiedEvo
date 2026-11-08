@@ -1,156 +1,84 @@
-# EmbodiedEvo: Self-Evolving Coding Agent For Physical Intelligence
+# DynamicsAdapt
 
-<p align="center">
-  <a href="https://arxiv.org/abs/2610.18867">
-    <img src="https://img.shields.io/badge/arXiv-2610.18867-B31B1B?style=flat-square" alt="arXiv: 2610.18867" />
-  </a>
-  <a href="https://lab.einsia.ai/embodiedevo/">
-    <img src="https://img.shields.io/badge/Project%20Page-Website-315F85?style=flat-square" alt="Project Page" />
-  </a>
-</p>
+**An agent diagnoses dynamics differences, reconstructs them in a source simulator,
+and continues reinforcement learning to recover task performance.**
 
-<p align="center">
-  <img src="docs/images/embodiedevo-hero.png" alt="EmbodiedEvo overview: a coding agent observes physical feedback, revises and executes control code, and accumulates reusable Skills and Lessons that are frozen and transferred to a fresh agent in each new Test scene." width="100%" />
-</p>
+DynamicsAdapt builds on the Agent execution and isolation infrastructure of
+EmbodiedEvo. The current case study transfers a cube-to-plate neural policy from
+source friction `1.0` to a fixed, hidden target friction `0.25` in RoboDojo/Isaac Sim.
+The agent chooses source physics parameters, writes reward programs, and requests
+PPO training. Registered neural networks perform every formal robot rollout.
 
-**Observe, revise code, and act. Learn Skills and Lessons from physical feedback.**
-
-EmbodiedEvo connects a coding agent's workspace to a persistent RoboDojo simulation
-session. The agent inspects observations, edits Python control code, executes it,
-and uses the resulting physical feedback to guide its next revision. Its evolving
-knowledge lives in reusable code and written lessons in the workspace.
-
-1. **Observe, revise, execute.** Inspect camera observations and robot state,
-   update control code, and execute the revised segment in the same Python and
-   simulation session. New observations close the interaction loop.
-2. **Build Skills and Lessons in Playground.** Turn interaction experience into
-   reusable helpers in `skills/` and practical guidance in `lessons/`, such as
-   grasping from above, verifying a grasp, or carrying an object in small steps.
-   Playground permits same-scene resets while the agent refines this knowledge.
-3. **Freeze and reuse in Test.** Freeze only `skills/` and `lessons/` before
-   selecting Test scenes. Each scene starts with a fresh agent, workspace, and
-   simulator. The transferred knowledge is read-only; the agent can observe and
-   revise code within the scene, but cannot reset or learn across Test scenes.
-
-## Setup
-
-Use a Linux host and Python 3.11 or newer for the orchestration environment:
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-host.txt -e '.[dev]'
-.venv/bin/python -m unittest discover -s tests -v
+```mermaid
+flowchart LR
+    P0[Frozen source policy P0] --> B[Paired source / target baseline]
+    B --> A[Agent hypotheses and source probes]
+    A --> S[Calibrated source and reward program]
+    S --> RL[Continue PPO]
+    RL --> T[Target development feedback]
+    T --> A
+    T --> E[Host selection and frozen evaluation]
 ```
 
-Build the thin coding-agent image directly from the included Dockerfile:
+The experiment keeps target parameters private, preserves failed attempts, and
+reports task recovery separately from the evidence for a diagnosis. It uses one
+fixed scene, four development episodes, and a final evaluation of 10 deterministic
+plus 20 stochastic episodes. Acceptance requires at least 27 strict successes.
+There is no matched control branch in this case study. See the
+[research protocol](docs/PROTOCOL.md) for the precise scope and success rules.
+
+## Start here
+
+Use Linux, Python 3.11+, and an editable source checkout. Follow
+[installation](docs/INSTALL.md) for the host/RL environments, provisioned simulator
+image and assets, and thin Agent image. Configure the model using
+[Codex API setup](docs/CODEX_API.md). Runtime files, weights and credentials are
+local prerequisites and are not distributed with the source.
+
+After setting `p0.policy`, `p0.demos`, image names and model settings in a local copy
+of [the experiment configuration](tasks/DynamicsAdapt/config.example.json):
 
 ```bash
-docker build -t embodiedevo-agent:latest docker/agent
-```
-
-The Dockerfile installs pinned Codex CLI 0.159.2 and basic Python/image tools;
-no host Codex installation or API key is needed for the build. Its context
-contains no credentials, task files or simulator assets. Build
-the image on each Docker host that will run agents; the simulator is provisioned
-separately. See [the complete image build procedure](docs/INSTALL.md#thin-agent-container).
-
-Run commands from this repository root. The editable installation keeps task
-templates and recipes available at their source paths. The project is currently
-distributed as a source checkout, not a standalone wheel with simulator assets.
-
-Real episodes require a separately provisioned RoboDojo/Isaac Sim environment,
-assets, an available NVIDIA GPU, Docker, and configured model credentials.
-Follow [installation](docs/INSTALL.md), including
-[Codex API configuration](docs/CODEX_API.md), before starting an experiment.
-
-## Playground and Test
-
-After setup, choose a native task with `--env-task`. The model and reasoning
-effort are explicit in `tasks/RoboDojo/task.toml`; configure them before a new run.
-
-```bash
-RUN_DIR="runs/$(date +%Y%m%d%H%M)_stack_bowls"
-.venv/bin/embodiedevo explore --task RoboDojo --env-task stack_bowls \
+RUN_DIR="runs/$(date +%Y%m%d%H%M)_dynamicsadapt"
+.venv-rl/bin/dynamicsadapt run --config /path/to/experiment.json \
   --run-dir "$RUN_DIR" --gpu 0
-.venv/bin/embodiedevo test --task RoboDojo --env-task stack_bowls \
-  --run-dir "$RUN_DIR" --gpu 0
+.venv-rl/bin/dynamicsadapt evaluate --run-dir "$RUN_DIR" --gpu 0
+.venv-rl/bin/dynamicsadapt summarize --run-dir "$RUN_DIR"
 ```
 
-`embodiedevo run` performs both stages. Test-only baseline:
+`python -m orchestrator` exposes the same commands. [Running experiments](docs/RUNNING.md)
+also covers optional P0 demonstration collection/behavior cloning, smoke runs and
+the separate host-only trainability check.
+
+CPU validation, when the local test suite is available (tests are excluded from Git):
 
 ```bash
-.venv/bin/embodiedevo test --task tasks_baseline/RoboDojo --env-task stack_bowls \
-  --run-dir "runs/$(date +%Y%m%d%H%M)_stack_bowls_baseline" --gpu 0
+.venv-rl/bin/python -m unittest discover -s tests -v
 ```
 
-The baseline starts with its own instruction and no transferred Skills/Lessons.
-Public task recipes are enabled by default for both configurations, matching the
-source snapshot. Set `EMBODIEDEVO_USE_RECIPE=0` before preparing a new run to omit
-that supplied knowledge. The choice and recipe source are recorded per run.
-See [the protocol](docs/PROTOCOL.md) and [running and evaluation](docs/RUNNING.md).
+GPU simulation, container builds and model calls require separate resources; CPU
+tests do not establish physical correctness or policy performance.
 
-The separate [dynamics diagnosis and policy repair experiment](docs/DYNAMICS_REPAIR.md)
-adds a red-cube-to-plate task, editable diagnostic copies, a fixed target environment,
-and paired repair conditions. Start it by letting the coding agent learn its
-grasp-and-placement policy in the source environment:
-
-```bash
-.venv/bin/python -m orchestrator.dynamics_repair run \
-  --config tasks/DynamicsRepair/experiment.example.json \
-  --run-dir "runs/$(date +%Y%m%d%H%M)_dynamics_run" --gpu 0
-```
-
-The runner freezes and validates that policy before testing transfer to the fixed
-target and starting the repair branches. Development calibration with supplied
-policies is optional; the example configuration fixes the target friction scale
-at `0.3` (`0.25` when omitted) before the run and hides it from the agent. The experiment does not contribute to
-the original RoboDojo Test scores. Real contact behavior, target recoverability,
-and repair performance require separate GPU and model evidence.
-
-The separate [neural-policy training experiment](docs/DYNAMICS_RL.md) uses the successful
-cube-to-plate code policy to collect demonstrations, pretrains a state-based network,
-and improves it with SAC. It trains with independent cube/plate position variation
-and evaluates a frozen network in fresh held-out scenes. This experiment uses object
-ground truth and does not contribute to the original RoboDojo Test scores.
-
-## Source map
+## Code map
 
 | Path | Role |
-| --- | --- |
-| `orchestrator/` | Task configuration, isolated agents, sessions, freeze and Test lifecycle |
-| `environments/`, `simulators/` | Python execution, four primitives and RoboDojo adaptation |
-| `integrations/robodojo_policy/` | XPolicyLab policy and native evaluation transport |
-| `tasks/RoboDojo/` | Playground/Test templates, primitive manual and public recipes |
-| `tasks_baseline/RoboDojo/` | Fresh Test-only baseline |
-| `docker/agent/`, `scripts/` | Thin agent image, provisioning and diagnostics |
-| `tests/` | CPU tests; optional transport tests require a provisioned XPolicyLab |
+|---|---|
+| `orchestrator/experiment.py`, `experiment_service.py`, `experiment_jobs.py` | Experiment lifecycle, restricted Agent requests, retained rollout/training jobs |
+| `orchestrator/launch_agent.py` | Isolated CLI Agent and private temporary home |
+| `orchestrator/p0.py` | Optional source demonstrations, behavior cloning and P0 evaluation |
+| `integrations/friction_rl/` | Policy, PPO, reward sandbox, episode execution and simulator transport support |
+| `simulators/` | RoboDojo task, physics, native scoring and raw capture |
+| `tasks/DynamicsAdapt/` | Experiment configurations, public Agent workspace and host-only smoke/oracle helpers |
+| `docker/agent/`, `configs/` | Agent image definition and configuration templates |
 
-Cluster campaigns, private deployment profiles, historical recovery tools,
-dashboards and result archives are outside this source distribution.
-[Source provenance](docs/SOURCE.md) describes the export and its validation limits.
+## Provenance and evidence
 
-## License and third-party material
+The historical run `202611041916_fa_run` recorded P0 at **0/30** and the selected
+N002 policy at **30/30** strict target successes. These are retained historical
+results for this single scene, not a new validation of the refactored code or
+evidence of generalization to other layouts or real robots.
 
-A project-wide license has not yet been selected. This is a local release
-preparation, not yet a licensed public release. The included RoboProbe task
-recipes retain their Apache-2.0 license and source attribution; see
-[third-party notices](THIRD_PARTY_NOTICES.md).
-
-## Citation
-
-If you use EmbodiedEvo in your research, please cite our
-[paper](https://arxiv.org/abs/2610.18867).
-
-```bibtex
-@misc{li2026embodiedevoselfimprovingcodingagents,
-  title         = {EmbodiedEvo: Self-improving Coding Agents for Physical Intelligence},
-  author        = {Wenyi Li and Yizhe Chi and Youjie Zheng and Chunyu Liu and
-                   Xiaoqiu Wang and Mingju Gao and Zheng Jiang and Deyao Hong and
-                   Calvin Xiao and Kaisen Yang and Qinhuai Na},
-  year          = {2026},
-  eprint        = {2610.18867},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.RO},
-  url           = {https://arxiv.org/abs/2610.18867}
-}
-```
+[Source history](docs/SOURCE.md) describes the EmbodiedEvo contribution, removed
+historical experiment branches and the unchanged source manifest.
+[Third-party notices](THIRD_PARTY_NOTICES.md) describe upstream dependencies and
+the historical recipe license. No project-wide license has been selected.

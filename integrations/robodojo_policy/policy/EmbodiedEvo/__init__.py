@@ -1,1 +1,0 @@
-"""EmbodiedEvo XPolicyLab policy adapter."""

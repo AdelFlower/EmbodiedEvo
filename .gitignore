@@ -5,6 +5,10 @@
 /videos/
 /outputs/
 /debug/
+# Tests are maintained locally and excluded from source commits.
+/tests/
+/test-results/
+/coverage.xml
 *.log
 nohup.out
 *.mp4
@@ -36,7 +40,6 @@ htmlcov/
 .DS_Store
 /.vscode/
 /.idea/
-tests/*
 
 # Operator credentials and site-specific settings
 .env

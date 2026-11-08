@@ -1,7 +1,7 @@
 """Use a pinned RoboDojo image as the simulator interpreter, never as the agent.
 
-The provisioned .venv-robodojo/bin/python delegates here. EmbodiedEvo still owns
-the session, adapter, budgets, source snapshot and all run artifacts.
+The provisioned .venv-robodojo/bin/python delegates here. DynamicsAdapt owns
+the worker, experiment budgets and all run artifacts.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import select
 import shlex
 import signal
 import socket
@@ -20,7 +19,7 @@ import threading
 from collections import deque
 from pathlib import Path
 
-from orchestrator.config import CODE_ROOT, REPO
+from orchestrator.runtime import CODE_ROOT, REPO
 from orchestrator.files import write_json
 
 
@@ -62,13 +61,6 @@ def docker_command(argv, profile, bridge, name):
     if socket_arg := option(argv, "--socket"):
         folder = Path(socket_arg).resolve().parent
         args += ["-v", f"{folder}:{folder}"]
-    if workspace_arg := option(argv, "--workspace"):
-        workspace = Path(workspace_arg).resolve()
-        # Native frames are archived beside the workspace, outside the agent mount.
-        raw_observations = workspace.parent / "raw_observations"
-        raw_observations.mkdir(parents=True, exist_ok=True)
-        args += ["-v", f"{workspace}:{workspace}",
-                 "-v", f"{raw_observations}:{raw_observations}"]
     cache = Path(profile["cache_dir"])
     cache.mkdir(parents=True, exist_ok=True)
     args += ["-v", f"{cache}:/tmp/.nv"]
@@ -104,33 +96,16 @@ def docker_command(argv, profile, bridge, name):
         environment["EMBODIEDEVO_ROBODOJO_VIDEO_THREADS"] = str(profile["video_threads"])
     if profile.get("renderer_barrier"):
         environment["EMBODIEDEVO_ROBODOJO_RENDERER_BARRIER"] = "1"
-    if (threads := option(argv, "--cpu-threads")) and int(threads) > 0:
-        # USD can be imported by image_entrypoint before the worker runs.
-        environment["PXR_WORK_THREAD_LIMIT"] = threads
     for key, value in environment.items():
         args += ["-e", f"{key}={value}"]
     inner = list(argv)
     if "--gpu" in inner:
         # Docker exposes only the selected physical card, at container index 0.
         inner[inner.index("--gpu") + 1] = "0"
-    redirect = ""
-    if "--ready-fd" in inner:
-        inner[inner.index("--ready-fd") + 1] = "3"
-        redirect = "exec 3>/run/embodiedevo/events; "
     invocation = [profile["python"], "-m", "simulators.image_entrypoint", *inner]
-    gate_wait = ""
-    if gate := option(argv, "--container-start-gate"):
-        # This shell is reached only after the NVIDIA prestart hook succeeds.
-        # Keep Kit/CUDA imports out of the GPU-hook provisioning phase.
-        gate_wait = (
-            f"touch {shlex.quote(str(run / 'container-ready'))}; "
-            f"while [ ! -e {shlex.quote(str(Path(gate).resolve()))} ]; do "
-            f"if [ -e {shlex.quote(str(run.parent / 'STOP'))} ]; then exit 143; fi; "
-            "sleep 0.2; done; "
-        )
     shell = (
         'unset DISPLAY; mkdir -p "$HOME" "$XDG_RUNTIME_DIR" /run/embodiedevo/kit; '
-        'chmod 700 "$XDG_RUNTIME_DIR"; ' + gate_wait + redirect + "exec " + shlex.join(invocation)
+        'chmod 700 "$XDG_RUNTIME_DIR"; exec ' + shlex.join(invocation)
     )
     return [*args, "-w", str(CODE_ROOT), "--entrypoint", "/bin/bash", image, "-c", shell]
 
@@ -145,14 +120,11 @@ def main(argv=None):
         raise ValueError("The image simulator requires an explicit --run-dir")
     run = Path(run_arg).resolve()
     run.parent.mkdir(parents=True, exist_ok=True)
-    outgoing = option(argv, "--ready-fd")
-    outgoing = int(outgoing) if outgoing is not None else None
     name = f"embodiedevo-sim-{os.getppid()}-{os.getpid()}"
     state = {
         "name": name, "owner": os.getppid(), "pid": os.getpid(),
         "hostname": socket.gethostname(), "image": profile["image"],
     }
-    # Smoke commands create their own run directory and must see it absent.
     marker = run / "simulator-container.json" if run.exists() else None
 
     def terminate(*_):
@@ -166,13 +138,10 @@ def main(argv=None):
         bridge = Path(temporary)
         bridge.chmod(0o755)
         state["temporary_directory"] = str(bridge)
-        incoming = process = None
+        process = None
         stderr_tail = deque(maxlen=16)
         stderr_reader = None
         try:
-            if outgoing is not None:
-                os.mkfifo(bridge / "events", mode=0o600)
-                incoming = os.open(bridge / "events", os.O_RDWR | os.O_NONBLOCK)
             command = docker_command(argv, profile, bridge, name)
             if marker:
                 write_json(marker, {**state, "status": "starting"})
@@ -184,16 +153,7 @@ def main(argv=None):
 
             stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
             stderr_reader.start()
-            while process.poll() is None:
-                if incoming is None:
-                    with contextlib.suppress(subprocess.TimeoutExpired):
-                        process.wait(timeout=0.2)
-                elif select.select([incoming], [], [], 0.2)[0]:
-                    os.write(outgoing, os.read(incoming, 65536))
-            if incoming is not None:
-                while select.select([incoming], [], [], 0)[0]:
-                    os.write(outgoing, os.read(incoming, 65536))
-            return process.returncode
+            return process.wait()
         finally:
             # Preserve native diagnostics before removing the private Kit home,
             # including native exit(0)/abort paths that bypass Python exceptions.
@@ -215,9 +175,6 @@ def main(argv=None):
                 stderr_reader.join(timeout=1)
             if run.exists() and stderr_tail:
                 (run / "native-stderr-tail.log").write_bytes(b"".join(stderr_tail))
-            if incoming is not None:
-                os.close(incoming)
-                os.close(outgoing)
             if marker:
                 write_json(marker, {**state, "status": "stopped",
                                     "stderr_tail": b"".join(stderr_tail).decode(errors="replace"),

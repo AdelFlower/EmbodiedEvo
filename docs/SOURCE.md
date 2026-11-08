@@ -1,70 +1,78 @@
-# Source provenance and release scope
+# Source provenance and historical evidence
 
-Prepared on 2026-10-06 from the local development working tree. The export includes
-selected uncommitted implementation changes; it is not an archive of `HEAD` alone.
-[SOURCE_MANIFEST.json](../SOURCE_MANIFEST.json) records the base commit, original
-file hashes and hashes of the current files. The EmbodiedEvo naming update on
-2026-10-13 refreshed current paths and hashes (`path` / `sha256`); original
-source paths, hashes and the base commit remain unchanged. `prepared_on` records
-the export date and `updated_on` records the latest manifest refresh.
-The manifest contains no private remote URL.
-The original file paths in that manifest retain historical policy names for
-traceability; runtime and package names use EmbodiedEvo.
+DynamicsAdapt is derived from EmbodiedEvo. It reuses the original project's
+isolated CLI Agent launcher, staged provider home, workspace/socket isolation,
+process lifecycle, raw evidence and model-usage recording. The active research
+loop is the later FrictionAgent experiment: hidden dynamics diagnosis, calibrated
+source reconstruction, Agent-written rewards and PPO recovery.
 
-The exported source was prepared as an independent copy with its own Git
-directory, no configured remote at export, no inherited commit history, and no
-links or hardlinks to the development checkout. All preparation edits were made
-in the new directory.
+The simulator backend remains RoboDojo/Isaac Sim with local compatibility
+adapters. Preserve these attributions when describing or redistributing the work.
+The original EmbodiedEvo project reference is
+[EmbodiedEvo: Self-improving Coding Agents for Physical Intelligence](https://arxiv.org/abs/2610.18867).
+A project-wide license has not been selected; dependency or historical recipe
+licenses do not license the entire project.
 
-## Included
+## Refactor boundary
 
-- RoboDojo four-primitives adapter and persistent Python execution.
-- Playground, frozen Skills/Lessons and independent Test sessions.
-- Test-only baseline and handwritten workspace templates.
-- XPolicyLab policy, local native evaluation, and the shared single-scene image
-  executor with an existing-allocation GPU check.
-- Thin agent image definition, runtime setup/diagnostic scripts and CPU tests.
-- Unmodified public recipe text, its license and checksum manifest.
+The complete pre-refactor tree is recorded at Git commit
+`37a151311bb3989596bb79a33ccc18121408b817`. It includes the original Playground/Test
+benchmark, code-policy repair, SAC/PPO adaptation prototypes, fixability study,
+friction search, historical specifications and supplied recipes. These are no
+longer active entry points. They remain recoverable from Git history rather than
+being duplicated in the current source tree.
 
-## Excluded
+The current source retains the FrictionAgent policy/training/diagnostic protocol,
+minimal source-only P0 preparation, necessary Agent infrastructure and the
+simulator dependency closure. Old CLI commands are not forwarded. The public
+entry point is `dynamicsadapt` / `python -m orchestrator`.
 
-Other benchmark backends, experiment outputs, logs, videos, dashboards, report
-archives, virtual environments, simulator source/assets/images, model credentials,
-private configuration, cluster schedulers, historical recovery scripts and the
-private distributed Final deployment are not part of this source export.
-No frozen learned harnesses or reported-score artifacts are included.
+Existing simulator wrappers still call `orchestrator.robodojo_image` and
+`simulators.image_entrypoint`. Deployment `EMBODIEDEVO_*` environment keys,
+provisioned vendor paths and installed image tags remain compatible. These are
+runtime compatibility names, not alternate research workflows.
 
-## Preparation changes
+[`SOURCE_MANIFEST.json`](../SOURCE_MANIFEST.json) is preserved unchanged as a
+historical export/provenance record. Its original source paths and checksums
+belong to that export; it is not a manifest of the current DynamicsAdapt tree and
+must not be rewritten to make historical hashes describe this refactor. Git
+records the subsequent changes.
 
-The package, CLI, policy name, environment variables, container names, network
-and socket names use `embodiedevo` / `EMBODIEDEVO` / `EmbodiedEvo`. The scientific
-protocol identifier remains `workspace-session-v1`. Only RoboDojo is registered.
-Task goals, budgets, primitive manuals and recipe contents are preserved.
+## Historical single-scene result
 
-The private campaign scheduler is omitted; its small GPU-index parser is retained
-for the optional Slurm executor. Native logging pipe reservation is extracted
-into `pipe_capacity.py`, independent of the private Final launcher. Historical
-image installations may have an extension cache under `/opt/eah/kit-ext-cache/3`;
-that compatibility default is an image path, and can be replaced through
-`kit_ext_cache` in the supplied runtime profile.
+The existing local run `runs/202611041916_fa_run` reports:
 
-Host-specific tests now use temporary fixtures. Shared CPU tests no longer import
-an optional transport-test module, and native transport tests explicitly skip
-until their external dependencies are installed. Packaging includes the policy
-and script modules and excludes the dashboard. Use an editable source install.
+| Frozen network | Target episodes | Strict successes | Lenient successes |
+|---|---:|---:|---:|
+| N000 (P0) | 30 | 0 | 0 |
+| N002 (selected) | 30 | 30 | 30 |
 
-## Validation at export
+The recorded Agent used two rounds, 100 PPO iterations, eight development target
+episodes and eight diagnostic episodes. The historical specification describes
+friction and mass probes followed by two reward revisions. Task performance and
+support for the dynamics diagnosis must be assessed separately from the original
+trajectories, predictions and job records.
 
-- Fresh temporary Python environment: editable install and `pip check` passed.
-- Unit tests: 88 discovered; 87 passed and one optional XPolicyLab suite skipped.
-- CLI help, Python/TOML parsing, shell syntax, local-module imports and critical
-  undefined-name checks passed.
-- Both task configurations prepare with their default recipes; all 42 recipe
-  hashes match the original manifest.
-- Source/configuration screening excluded private host paths, provider endpoints,
-  credential files and prior experiment evidence.
+These results predate the refactor. They use one fixed scene, 10 deterministic
+and 20 stochastic evaluation episodes, simulated state/contact access, a source
+imitation prior and no matched control. They do not establish robustness across
+layouts, real-robot transfer or correctness of the refactored GPU execution.
+The separately recorded oracle trainability run is researcher evidence and must
+never enter an Agent workspace or the formal initialization.
 
-No GPU simulator, Docker image build or model call was run for this export.
-Native runtime compatibility and historical result reproduction remain unverified.
-Choose the project-wide license before publishing; the recipe license remains
-separate.
+Runtime results, weights, demonstrations, videos, credentials, environments,
+images and machine profiles are not bundled in Git. A source checkout alone does
+not reproduce the historical result; matching P0 artifacts and a separately
+validated native runtime are required.
+
+## Validation claims
+
+Use `python -m unittest discover -s tests -v` for CPU software validation. Report
+its actual outcome for the revision being reviewed. Real material/mass changes,
+reset behavior, state/render parity and target recovery require separate GPU
+checks. Docker image builds and model runs are also separate operations. Do not
+present historical experiment outcomes or pre-refactor CPU counts as fresh
+validation of this tree.
+
+See [third-party notices](../THIRD_PARTY_NOTICES.md) for the unchanged historical
+recipe sources and licensing records.

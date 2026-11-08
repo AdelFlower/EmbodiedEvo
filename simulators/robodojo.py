@@ -1,4 +1,4 @@
-"""Host-owned Isaac Sim / RoboDojo behind the persistent code interface."""
+"""Native Isaac Sim lifecycle, reset compatibility and robot control."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from simulators.execution import CodeTask
-from simulators.robodojo_api import RoboDojoLowLevelApi
-from simulators.robodojo_layouts import ROOT, decode_scene
+from orchestrator.runtime import REPO
+
+ROOT = REPO / "vendor/robodojo"
 
 
 class InvalidControlAction(ValueError):
@@ -31,7 +31,7 @@ class _NoPolicyServer:
 
     def call(self, **kwargs):
         if kwargs.get("func_name") != "reset":
-            raise RuntimeError("RoboDojo policy inference is owned by the EmbodiedEvo agent")
+            raise RuntimeError("Policy inference is owned by the DynamicsAdapt host")
 
     def close(self):
         pass
@@ -47,22 +47,10 @@ def robodojo_cwd():
         os.chdir(previous)
 
 
-class RoboDojoTask(CodeTask):
-    official_action_limit = True
+class RoboDojoRuntime:
+    """Own one native task without agent source execution or benchmark sessions."""
 
-    def __init__(
-        self, task_name, *, seed=None, solve_articulation_contact_last=False,
-        min_position_iterations=None, min_velocity_iterations=None,
-        official_action_limit=True,
-    ):
-        super().__init__()
-        self.official_action_limit = official_action_limit
-        self.solve_articulation_contact_last = solve_articulation_contact_last
-        self.min_position_iterations = min_position_iterations
-        self.min_velocity_iterations = min_velocity_iterations
-        for value in (min_position_iterations, min_velocity_iterations):
-            if value is not None and (type(value) is not int or not 1 <= value <= 255):
-                raise ValueError("PhysX solver iteration overrides must be integers in [1, 255]")
+    def __init__(self, task_name, *, seed=None):
         self.task_name = task_name
         self.scene_seed = 0 if seed is None else seed
         self.bank, self.ordinal, self.layout_path = self._scene_identity(task_name, self.scene_seed)
@@ -74,34 +62,55 @@ class RoboDojoTask(CodeTask):
         # Kit holds NFS log files open until shutdown; cleanup must not prevent
         # the application from closing when .nfs files temporarily remain.
         self._temporary = tempfile.TemporaryDirectory(
-            prefix="embodiedevo-robodojo-", ignore_cleanup_errors=True
+            prefix="dynamicsadapt-robodojo-", ignore_cleanup_errors=True
         )
         self.app = self.native = None
         self._physx_monitor = None
         self._failure = None
         self.max_steps = None
-        self.initialize(RoboDojoLowLevelApi(self))
+        self._initialize_state()
         try:
             with robodojo_cwd():
                 self._create_native()
-            # Keep the task-specific native cutoff in both Playground and Test.
-            # The explicit opt-out is only for reproducing historical unlimited runs.
             self.native_step_limit = int(self.native.step_lim)
-            if self.official_action_limit:
-                self.max_steps = self.native_step_limit
-            else:
-                self.native.step_lim = float("inf")
+            self.max_steps = self.native_step_limit
         except BaseException:
             self.close()
             raise
 
-    def _scene_identity(self, task_name, seed):
-        return decode_scene(task_name, seed)
+    def _initialize_state(self):
+        self._observation = None
+        self._frames = {}
+        self.success = self.terminated = self.truncated = False
+        self.control_steps = 0
+        self._restoring_scene = False
 
-    def _load_task_config(self):
-        from utils.load_file import load_yaml
+    def start_episode(self, seed, obs, *, reset_options=None):
+        if not self._restoring_scene:
+            self.control_steps = 0
+        self.success = self.terminated = False
+        self.truncated = self.max_steps is not None and self.control_steps >= self.max_steps
+        self.observe(obs)
+        return self.public_observation(), {"task_prompt": self.task_prompt()}
 
-        return load_yaml(str(ROOT / "task/RoboDojo/config" / (self.task_name + ".yml")))
+    def observe(self, obs):
+        self._observation = copy.deepcopy(obs)
+
+    def public_observation(self):
+        if self._observation is None:
+            raise RuntimeError("Call reset before reading observations")
+        return copy.deepcopy(self._observation)
+
+    def task_prompt(self):
+        return getattr(self, "_task_prompt", "")
+
+    @property
+    def done(self):
+        return self.terminated or self.truncated
+
+    def transition(self, reward=0.0):
+        return (self.public_observation(), float(reward), self.terminated,
+                self.truncated, {"success": self.success})
 
     def _create_eval_env(self, eval_module, cfg):
         return eval_module.create_eval_env(
@@ -163,15 +172,15 @@ class RoboDojoTask(CodeTask):
             device_id=0,
             eval_batch=False,
             eval_num=1,
-            policy_name="EmbodiedEvo",
+            policy_name="DynamicsAdapt",
             seed=self.bank,
-            additional_info="workspace-session-v1",
+            additional_info="dynamics-adapt-v1",
             physx_monitor_enabled=monitor_enabled,
         )
         cfg = OmegaConf.create(
             {
                 "eval_cfg": eval_cfg,
-                "deploy_cfg": {"policy_name": "EmbodiedEvo", "port": 1},
+                "deploy_cfg": {"policy_name": "DynamicsAdapt", "port": 1},
                 **{
                     name: load_yaml(str(base / name / (eval_cfg["config"][name] + ".yml")))
                     for name in ("sim", "scene", "camera", "robot")
@@ -198,16 +207,6 @@ class RoboDojoTask(CodeTask):
         def configure_with_private_logs(config):
             configure_scene(config)
             self.native.sim_cfg.sim.log_dir = str(Path(self._temporary.name) / "isaaclab-logs")
-            if self.solve_articulation_contact_last:
-                # Explicitly recorded in the episode config; task/reward and
-                # physical properties are unchanged. Resolve contact after the
-                # stiff articulation constraints to avoid numerical divergence.
-                self.native.sim_cfg.sim.physx.solve_articulation_contact_last = True
-            physx = self.native.sim_cfg.sim.physx
-            if self.min_position_iterations is not None:
-                physx.min_position_iteration_count = self.min_position_iterations
-            if self.min_velocity_iterations is not None:
-                physx.min_velocity_iteration_count = self.min_velocity_iterations
 
         self.native.setup_sim_cfg = configure_with_private_logs
 
@@ -267,68 +266,31 @@ class RoboDojoTask(CodeTask):
 
     @contextlib.contextmanager
     def _retire_reset_rigid_bodies(self):
-        """Move old CPU bodies away before native reload hides their prims."""
+        """Keep native rigid actors and their identities across fixed-scene resets."""
         if not self._restoring_scene:
             yield
             return
         manager = self.native.scene_manager
-        if getattr(self, "reuse_reset_rigid_bodies", False):
-            # Fixed-scene reset can retain rigid actors, as native CUDA reload
-            # does. Native relocation and apply_saved_poses still restore state.
-            clear, spawn = manager.clear_scene_objects, manager.spawn_scene_objects
-            relocate = manager.relocate_stale_objects
+        # Fixed-scene reset can retain rigid actors, as native CUDA reload
+        # does. Native relocation and apply_saved_poses still restore state.
+        clear, spawn = manager.clear_scene_objects, manager.spawn_scene_objects
+        relocate = manager.relocate_stale_objects
 
-            def with_rigid(types):
-                return list(dict.fromkeys([*(types or []), "rigid"]))
+        def with_rigid(types):
+            return list(dict.fromkeys([*(types or []), "rigid"]))
 
-            def retained_clear(env_id, exclude_types=None):
-                return clear(env_id, with_rigid(exclude_types))
+        def retained_clear(env_id, exclude_types=None):
+            return clear(env_id, with_rigid(exclude_types))
 
-            def retained_spawn(env_id, exclude_types=None):
-                return spawn(env_id, with_rigid(exclude_types))
+        def retained_spawn(env_id, exclude_types=None):
+            return spawn(env_id, with_rigid(exclude_types))
 
-            def retained_relocate(env_id, obj_types=None):
-                return relocate(env_id, None if obj_types is None else with_rigid(obj_types))
+        def retained_relocate(env_id, obj_types=None):
+            return relocate(env_id, None if obj_types is None else with_rigid(obj_types))
 
-            with (patch.object(manager, "clear_scene_objects", retained_clear),
-                  patch.object(manager, "spawn_scene_objects", retained_spawn),
-                  patch.object(manager, "relocate_stale_objects", retained_relocate)):
-                yield
-            return
-        delete = manager.delete_scene_object
-        rigid = {
-            id(obj)
-            for objects in manager._rigid_and_dynamic_objects
-            for obj in objects.values()
-        }
-        disable_collisions = getattr(self, "disable_retired_collisions", False)
-        retired = set(rigid)
-        if disable_collisions:
-            retired.update(
-                id(obj) for objects in manager._geometry_objects for obj in objects.values()
-            )
-
-        def retire(obj):
-            # Native CPU reload hides/disables old rigid bodies without deleting
-            # their prims. A later physics reset can revive those stale bodies at
-            # their previous poses, overlapping the new saved-layout objects.
-            if id(obj) in rigid:
-                obj.relocate_offscreen()
-            result = delete(obj)
-            if disable_collisions and id(obj) in retired:
-                from pxr import Usd, UsdPhysics
-
-                prim = obj.stage.GetPrimAtPath(obj.prim_path)
-                if prim and prim.IsValid():
-                    # Native CPU destroy disables the root view, but collision
-                    # shapes can live on descendants. Keep rigid registration
-                    # intact so existing physics tensor views remain valid.
-                    for child in Usd.PrimRange(prim):
-                        if child.HasAPI(UsdPhysics.CollisionAPI):
-                            UsdPhysics.CollisionAPI(child).CreateCollisionEnabledAttr().Set(False)
-            return result
-
-        with patch.object(manager, "delete_scene_object", retire):
+        with (patch.object(manager, "clear_scene_objects", retained_clear),
+              patch.object(manager, "spawn_scene_objects", retained_spawn),
+              patch.object(manager, "relocate_stale_objects", retained_relocate)):
             yield
 
     @contextlib.contextmanager
@@ -397,15 +359,9 @@ class RoboDojoTask(CodeTask):
                     self._retire_reset_rigid_bodies(),
                 ):
                     self.native.reset(seed=[self.ordinal])
-                if self.official_action_limit:
-                    # Playground reset starts a fresh native action allowance. Keep
-                    # cumulative telemetry, while the session's submission counter
-                    # and wall-clock budget remain owned by the orchestrator.
-                    used = self.control_steps if self._restoring_scene else 0
-                    self.native.step_lim = self.native_step_limit
-                    self.max_steps = used + self.native_step_limit
-                else:
-                    self.native.step_lim = float("inf")
+                used = self.control_steps if self._restoring_scene else 0
+                self.native.step_lim = self.native_step_limit
+                self.max_steps = used + self.native_step_limit
                 if self.native.episode_nums != 1 or self.native.end_flag[0]:
                     raise RuntimeError("RoboDojo layout failed native stability checks")
                 self._check_reset_robot_state(require_default=False)
@@ -464,8 +420,7 @@ class RoboDojoTask(CodeTask):
                 # success starts True upstream: it means still viable until end_flag.
                 self.success = ended and bool(self.native.success[0])
                 self.truncated = bool(
-                    ended and not self.success and self.official_action_limit
-                    and self.control_steps >= self.max_steps
+                    ended and not self.success and self.control_steps >= self.max_steps
                 )
                 self.terminated = ended and not self.truncated
                 self.observe(self.native.get_obs())
@@ -473,19 +428,6 @@ class RoboDojoTask(CodeTask):
         except Exception as exc:
             self._failure = exc
             raise
-
-    def _step(self, code):
-        if self._failure is not None:
-            raise RuntimeError("RoboDojo simulator failed") from self._failure
-        result = super()._step(code)
-        if self._failure is not None:
-            raise RuntimeError("RoboDojo simulator failed") from self._failure
-        return result
-
-    def private_scoring_snapshot(self):
-        from simulators.robodojo_scoring import snapshot
-
-        return snapshot(self)
 
     def close(self):
         try:

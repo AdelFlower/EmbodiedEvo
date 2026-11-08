@@ -1,1 +1,1 @@
-"""External evaluation interfaces, separate from the EmbodiedEvo protocol."""
+"""DynamicsAdapt neural policies, training and simulator transport."""

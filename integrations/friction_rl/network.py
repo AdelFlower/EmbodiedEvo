@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from integrations.dynamics_rl.features import ACTION_HIGH, ACTION_LOW, encode_action, unit_quaternion
+from integrations.friction_rl.control import ACTION_HIGH, ACTION_LOW, encode_action, unit_quaternion
 from integrations.friction_rl.episode import clearance, hand_offsets, motion_peaks, rest_row, REST_STEPS
 from integrations.friction_rl.primitive import ee_position, grasp_point, hand_q, slerp, PrimitivePolicy, PHASES
 from orchestrator.files import write_json
@@ -198,3 +198,11 @@ class ScriptController:
         executed = label.copy()
         executed[:3] = np.clip((target + self.noise - decoder.pad_cmd) / STEP, -1, 1)
         return label, executed
+
+
+def policy_controller(model, seed, stochastic):
+    """Give one episode its own reproducible action sampling stream."""
+    from integrations.friction_rl.ppo import act
+
+    rng = np.random.default_rng(seed)
+    return lambda t, obs, state, decoder: act(model, obs, rng, stochastic)

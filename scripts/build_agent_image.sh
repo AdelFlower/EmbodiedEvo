@@ -6,7 +6,7 @@ if [[ $# -gt 1 ]]; then
   echo "Usage: $0 [image-tag]" >&2
   exit 2
 fi
-image="${1:-embodiedevo-agent:latest}"
+image="${1:-dynamicsadapt-agent:latest}"
 build_args=()
 if [[ -n "${EMBODIEDEVO_BUILD_HTTP_PROXY:-}" ]]; then
   build_args+=(--build-arg "HTTP_PROXY=$EMBODIEDEVO_BUILD_HTTP_PROXY")

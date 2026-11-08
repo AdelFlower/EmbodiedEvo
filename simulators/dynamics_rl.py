@@ -1,6 +1,5 @@
 """Host-only state observations and episode resets for the independent RL experiment.
 
-The coding-agent primitives and the original DynamicsRepair task remain unchanged.
 Isaac imports are deliberately deferred to DynamicsTask's existing launch path.
 """
 
@@ -12,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from simulators.dynamics_task import DynamicsTask, experiment_settings, scene_layout
-from simulators.primitives import rgb_images
+from simulators.observations import rgb_images
 from simulators.robodojo import robodojo_cwd
 
 
@@ -189,8 +188,7 @@ class DynamicsRLTask(DynamicsTask):
         return result
 
     def observe(self, obs):
-        # Keep only the current observation. CodeTask's full-episode frame lists
-        # are appropriate for code submissions but unbounded during RL training.
+        # Stream frames to disk and retain only the current native observation.
         self._observation = copy.deepcopy(obs)
         self._frames = {}
         if self.mode != "render" or self.episode_dir is None:

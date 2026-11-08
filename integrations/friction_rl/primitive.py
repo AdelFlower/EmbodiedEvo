@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from integrations.dynamics_rl.features import (
+from integrations.friction_rl.control import (
     REFERENCE_QUATERNION, encode_action, quaternion_product, unit_quaternion,
 )
 from simulators.dynamics_scoring import Criteria
@@ -18,22 +18,8 @@ PARAMETER_NAMES = (
     "t_close", "lift_clear", "t_lift", "tilt", "t_carry", "release_dx",
     "release_dy", "t_settle",
 )
-LOW = np.array([-.008, -.008, -.015, -15, 0, 10, 6, .05, 8, 0, 12, -.03, -.03, 0])
-HIGH = np.array([.008, .008, .010, 15, .4, 40, 30, .08, 40, 40, 100, .03, .03, 20])
 PHASES = ("approach", "descend", "close", "lift", "carry", "settle",
           "lower", "release", "withdraw", "hold")
-
-
-def physical(u):
-    """Map normalized coordinates to physical parameters and integer durations."""
-    values = LOW + (np.asarray(u) + 1) * (HIGH - LOW) / 2
-    return {name: int(round(value)) if name.startswith("t_") else float(value)
-            for name, value in zip(PARAMETER_NAMES, values)}
-
-
-def normalized(params):
-    """Map physical parameters to normalized coordinates."""
-    return 2 * (np.array([params[name] for name in PARAMETER_NAMES]) - LOW) / (HIGH - LOW) - 1
 
 
 def approach_axis(q):

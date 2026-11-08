@@ -1,4 +1,4 @@
-"""Launch the native EmbodiedEvo module with the image's offline material cache."""
+"""Launch a DynamicsAdapt simulator worker with the image's offline material cache."""
 
 from __future__ import annotations
 
