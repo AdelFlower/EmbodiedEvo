@@ -15,6 +15,7 @@ from orchestrator.files import write_json
 from orchestrator.transport import receive, send
 from simulators.dynamics_native import beneath
 from simulators.dynamics_rl import DynamicsRLTask, json_value
+from simulators.observations import rgb_images
 
 
 class RLWorker:
@@ -71,6 +72,11 @@ class RLWorker:
         self.transitions = (episode / "transitions.jsonl").open("w")
         self._record(self.commands, command)
         self.env.reset_episode(command["scene"], episode)
+        if self.env.mode == "render":
+            import imageio.v2 as imageio
+
+            imageio.imwrite(episode / "reset_cam_head.png",
+                            rgb_images(self.env._observation)["cam_head"])
         self.episode_initialized = True
         self.state = self.env.rl_state()
         write_json(episode / "initial-state.json", self.env.host_snapshot())

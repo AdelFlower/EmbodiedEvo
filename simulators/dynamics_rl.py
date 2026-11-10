@@ -95,6 +95,42 @@ def install_kinematic_plate_reset(manager):
     manager.instantiate_object_wrapper = create_object
 
 
+def install_room_reload_cleanup(manager, delete_prim=None, is_prim_path_valid=None):
+    """Remove the previous room before the native reload spawns the next one.
+
+    Native reload_room deletes ``{env_root}/Room`` while rooms are spawned under
+    ``{env_root}/Rooms/...``, so every reset left the old room, and its RectLight,
+    on the stage. Persistent workers then rendered brighter after each reset
+    (5 stacked lights after 5 resets). Physics is unaffected; rendering is fixed.
+    """
+    if delete_prim is None:
+        from isaacsim.core.utils.prims import delete_prim, is_prim_path_valid
+    reload_room = manager.reload_room
+
+    def reload_single_room(env_id):
+        path = f"{manager.env_roots[env_id]}/Rooms"
+        if is_prim_path_valid(path):
+            delete_prim(path)
+        return reload_room(env_id)
+
+    manager.reload_room = reload_single_room
+
+
+def write_render_translation(prim, position):
+    """Author a retained kinematic body's world position in USD.
+
+    PhysX never writes kinematic poses back to USD, so the native physics-only
+    pose write moves the plate's collider but leaves its rendered prim at the
+    first layout of a persistent worker. Cameras must see the physical plate.
+    """
+    from pxr import Gf, Usd, UsdGeom
+
+    parent = UsdGeom.Xformable(prim.GetParent()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    translate = next(op for op in UsdGeom.Xformable(prim).GetOrderedXformOps()
+                     if op.GetOpType() == UsdGeom.XformOp.TypeTranslate)
+    translate.Set(type(translate.Get())(*parent.GetInverse().Transform(Gf.Vec3d(*position))))
+
+
 class DynamicsRLTask(DynamicsTask):
     """Source training or frozen-policy transfer; the host fixes the dynamics."""
 
@@ -129,6 +165,7 @@ class DynamicsRLTask(DynamicsTask):
         # Install before the first reset constructs any scene object. This is
         # deliberately scoped to this RL adapter, not the vendor or base task.
         install_kinematic_plate_reset(self.native.scene_manager)
+        install_room_reload_cleanup(self.native.scene_manager)
         if self.mode == "state":
             install_state_observations(self.native.obs_manager)
         # Stream each public observation exactly once into the durable episode
@@ -152,6 +189,8 @@ class DynamicsRLTask(DynamicsTask):
                 # apply_saved_pose clears velocities again after native reload;
                 # clear them now as reload itself advances physics as well.
                 obj.apply_saved_pose()
+                if label == "plate":
+                    write_render_translation(obj.prim, record["default_pos"])
 
     def reset_episode(self, scene, episode_dir):
         self.close_videos()

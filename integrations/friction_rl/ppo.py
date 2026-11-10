@@ -13,11 +13,11 @@ EXPLORE = (3, 4)
 class ActorCritic(nn.Module):
     """Keep a Gaussian actor and a separate value network."""
 
-    def __init__(self, obs_dim, act_dim):
+    def __init__(self, obs_dim, act_dim, critic_dim=None):
         super().__init__()
         self.actor = nn.Sequential(nn.Linear(obs_dim, 256), nn.Tanh(), nn.Linear(256, 256),
                                    nn.Tanh(), nn.Linear(256, act_dim))
-        self.critic = nn.Sequential(nn.Linear(obs_dim, 256), nn.Tanh(), nn.Linear(256, 256),
+        self.critic = nn.Sequential(nn.Linear(critic_dim or obs_dim, 256), nn.Tanh(), nn.Linear(256, 256),
                                     nn.Tanh(), nn.Linear(256, 1))
         self.log_std = nn.Parameter(torch.zeros(act_dim))
 
@@ -34,14 +34,14 @@ def load(path):
     return model
 
 
-def act(model, obs, rng, stochastic):
+def act(model, obs, rng, stochastic, explore=EXPLORE):
     """Explore gripper and force, retaining raw samples before command clipping."""
     with torch.no_grad():
         mean = model.actor(torch.as_tensor(obs, dtype=torch.float32)).numpy()
         std = model.log_std.exp().numpy()
     stored = mean.copy()
     if stochastic:
-        stored[list(EXPLORE)] += std[list(EXPLORE)] * rng.standard_normal(len(EXPLORE))
+        stored[list(explore)] += std[list(explore)] * rng.standard_normal(len(explore))
     return stored, np.clip(stored, -1, 1)
 
 
@@ -84,14 +84,16 @@ def optimizers(model, cfg):
     return actor_optimizer, critic_optimizer
 
 
-def ppo_update(model, batch, demos, cfg, actor_optimizer, critic_optimizer, actor_frozen):
+def ppo_update(model, batch, demos, cfg, actor_optimizer, critic_optimizer, actor_frozen,
+               explore=EXPLORE):
     """Update the critic and optionally the actor using PPO and a force-free motion prior."""
     obs, stored = (torch.as_tensor(batch[key], dtype=torch.float32) for key in ("obs", "stored"))
+    critic_obs = torch.as_tensor(batch["critic_obs"], dtype=torch.float32) if "critic_obs" in batch else obs
     demo_obs, labels = (torch.as_tensor(demos[key], dtype=torch.float32) for key in ("obs", "labels"))
     with torch.no_grad():
-        logp_old = Normal(model.actor(obs)[:, EXPLORE], model.log_std[list(EXPLORE)].exp()).log_prob(
-            stored[:, EXPLORE]).sum(-1)
-        values = model.critic(obs).squeeze(-1).numpy()
+        logp_old = Normal(model.actor(obs)[:, explore], model.log_std[list(explore)].exp()).log_prob(
+            stored[:, explore]).sum(-1)
+        values = model.critic(critic_obs).squeeze(-1).numpy()
     advantages, returns = gae(batch["reward"], values, batch["done"], cfg["gamma"], cfg["gae_lambda"])
     advantages = torch.as_tensor(advantages, dtype=torch.float32)
     advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
@@ -102,14 +104,14 @@ def ppo_update(model, batch, demos, cfg, actor_optimizer, critic_optimizer, acto
     stop = False
     for epoch in range(cfg["epochs"]):
         for indices in torch.randperm(len(obs)).split(cfg["minibatch"]):
-            logp = Normal(model.actor(obs[indices])[:, EXPLORE], model.log_std[list(EXPLORE)].exp()).log_prob(
-                stored[indices][:, EXPLORE]).sum(-1)
+            logp = Normal(model.actor(obs[indices])[:, explore], model.log_std[list(explore)].exp()).log_prob(
+                stored[indices][:, explore]).sum(-1)
             log_ratio = logp - logp_old[indices]
             ratio = log_ratio.exp()
             policy_loss = -torch.minimum(ratio * advantages[indices],
                                         ratio.clamp(1 - cfg["clip"], 1 + cfg["clip"])
                                         * advantages[indices]).mean()
-            value_loss = (model.critic(obs[indices]).squeeze(-1) - returns[indices]).square().mean()
+            value_loss = (model.critic(critic_obs[indices]).squeeze(-1) - returns[indices]).square().mean()
             demo_indices = torch.randint(len(demo_obs), (len(indices),))
             bc_loss = (model.actor(demo_obs[demo_indices])[:, :4] - labels[demo_indices, :4]).square().mean()
             approx_kl = ((ratio - 1) - log_ratio).mean()

@@ -126,3 +126,55 @@ cumulative counters; `policy.pt` is the inference state dictionary.
 Keep partial and failed evidence. Count incomplete planned episodes as failures,
 record actual resource use, and assess diagnosis separately from strict/lenient
 success. Never overwrite or retry an attempt automatically.
+
+## Deployable policy
+
+DP is a separate nominal-physics pipeline with random ±3 cm layouts, one-shot
+camera detection, a 21-feature actor and a privileged training-only critic. See
+[the DP specification](DEPLOYABLE_POLICY_SPEC.md) for the fixed settings and gates.
+Each command needs a new timestamp-prefixed directory. The simulator commands
+below require GPU resources; `bc` runs on CPU.
+
+```bash
+DP=tasks/Deployable/config.json
+C="runs/$(date +%Y%m%d%H%M)_dp_calibrate"
+.venv-rl/bin/dynamicsadapt deploy calibrate --config "$DP" --run-dir "$C"
+CAL="$C/calibration.json"
+.venv-rl/bin/dynamicsadapt deploy evaluate --config "$DP" --calibration "$CAL" \
+  --script --stream dev --detector simulated --run-dir "runs/$(date +%Y%m%d%H%M)_dp_script"
+D="runs/$(date +%Y%m%d%H%M)_dp_demos"
+.venv-rl/bin/dynamicsadapt deploy demos --config "$DP" --calibration "$CAL" --run-dir "$D"
+B="runs/$(date +%Y%m%d%H%M)_dp_bc"
+.venv-rl/bin/dynamicsadapt deploy bc --config "$DP" --demos "$D/demos.npz" --run-dir "$B"
+.venv-rl/bin/dynamicsadapt deploy evaluate --config "$DP" --calibration "$CAL" \
+  --policy "$B/policy.pt" --stream dev --detector simulated --run-dir "runs/$(date +%Y%m%d%H%M)_dp_bc_dev"
+P="runs/$(date +%Y%m%d%H%M)_dp_train"
+.venv-rl/bin/dynamicsadapt deploy train --config "$DP" --calibration "$CAL" \
+  --demos "$D/demos.npz" --policy "$B/policy.pt" --run-dir "$P"
+# Read selection.json (and fallback.json if present) to locate the selected policy.
+SELECTED=/path/from/selection/policy_itNNN.pt
+for LABEL in bc selected; do
+  POLICY="$B/policy.pt"
+  if [ "$LABEL" = selected ]; then POLICY="$SELECTED"; fi
+  .venv-rl/bin/dynamicsadapt deploy evaluate --config "$DP" --calibration "$CAL" \
+    --policy "$POLICY" --stream eval --detector simulated \
+    --run-dir "runs/$(date +%Y%m%d%H%M)_dp_${LABEL}_eval"
+  .venv-rl/bin/dynamicsadapt deploy evaluate --config "$DP" --calibration "$CAL" \
+    --policy "$POLICY" --stream render_eval --detector image \
+    --run-dir "runs/$(date +%Y%m%d%H%M)_dp_${LABEL}_render"
+done
+```
+
+Stop on a calibration or script/demo gate failure and consult the user. Training
+checks the BC gate (6/20 strict development successes or 30% stochastic online),
+retains every iteration and selects by strict successes, lenient successes, then
+earlier checkpoint. The registered three-iteration regression condition stops and
+retains the run, then starts a separate `_gripper` run from BC with exploration
+restricted to outputs 3 and 4. `--stochastic` enables sampled evaluation.
+
+Compare BC and selected results, including detection errors and stop reasons.
+Final acceptance requires the selected policy to reach 45/50 strict successes on
+`eval` and 18/20 on `render_eval`. This is simulation-only evaluation of one fixed
+robot/camera, nominal physics, fixed cube yaw and force-mode gripping. Calibration
+uses simulator frames; camera noise, latency and lighting variation are absent.
+Training rewards and termination use privileged simulator data.

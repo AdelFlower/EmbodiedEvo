@@ -75,10 +75,12 @@ def held_to_release(trace):
     return bool(len(opens) and both[lift:opens[0]].all())
 
 
-def run_net_episode(client, scene, episode_dir, controller):
+def run_net_episode(client, scene, episode_dir, controller, observer=None):
     """Execute and record one terminal network episode and its learning batch."""
     episode_dir = Path(episode_dir)
     state = client.reset(scene, episode_dir)["state"]
+    if observer is not None:
+        observer.reset(state, episode_dir)
     initial = {"initial_observed_ee_pose": np.array(state["public_state"]["right_ee_pose"], copy=True),
                "initial_cube_position": np.array(state["sample"]["cube_position"], copy=True),
                "initial_cube_quaternion": np.array(state["sample"]["cube_orientation"], copy=True),
@@ -97,8 +99,14 @@ def run_net_episode(client, scene, episode_dir, controller):
         "right_grip_force", "gripper_opening", "right_finger_contacts", "contacts",
         "cube_position", "cube_quaternion", "reward")}
     batch = {key: [] for key in ("obs", "stored", "reward", "done")}
+    if observer is not None:
+        batch["critic_obs"] = []
     for t in range(HORIZON):
-        obs = observe(state, t, decoder.pad_cmd)
+        if observer is None:
+            obs = observe(state, t, decoder.pad_cmd)
+        else:
+            obs, critic_obs = observer(state, t, decoder.pad_cmd)
+            batch["critic_obs"].append(np.array(critic_obs, copy=True))
         stored, executed = controller(t, obs, state, decoder)
         executed = np.clip(executed, -1, 1)
         action, force, closed = decoder.step(t, executed)
@@ -173,6 +181,8 @@ def run_net_episode(client, scene, episode_dir, controller):
     }
     record["held_to_release"] = held_to_release(trace)
     record["strict_success"] = record["success"] and record["held_to_release"]
+    if observer is not None:
+        record["observer"] = observer.record()
     np.savez(episode_dir / "trace.npz", **trace)
     write_json(episode_dir / "episode.json", record)
     return record, trace, batch

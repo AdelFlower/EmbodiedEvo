@@ -1,0 +1,73 @@
+{
+  "simulator_python": ".venv-robodojo/bin/python",
+  "startup_timeout": 1200,
+  "step_timeout": 120,
+  "seed": 0,
+  "num_envs": 2,
+  "layout_radius": 0.03,
+  "cube_shift": [
+    0,
+    0
+  ],
+  "plate_box": [
+    [0.0, 0.03],
+    [-0.03, 0.0]
+  ],
+  "script": {
+    "grasp_dx": 0,
+    "grasp_dy": 0,
+    "grasp_dz": 0.005,
+    "yaw": 0,
+    "grip_cmd": 0,
+    "t_descend": 30,
+    "t_close": 15,
+    "lift_clear": 0.0505,
+    "t_lift": 40,
+    "tilt": 0,
+    "t_carry": 90,
+    "release_dx": 0,
+    "release_dy": 0,
+    "t_settle": 15
+  },
+  "script_force": 15.0,
+  "demo_episodes": 64,
+  "demo_noise": [
+    0.002,
+    0.002,
+    0.001
+  ],
+  "demo_noise_rho": 0.95,
+  "bc_steps": 20000,
+  "bc_batch": 256,
+  "bc_lr": 0.001,
+  "init_std": [
+    0.02,
+    0.02,
+    0.02,
+    0.1,
+    0.25
+  ],
+  "calibration": "runs/YYYYMMDDHHMM_dp_calibrate/calibration.json",
+  "training": {
+    "explore": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "episodes_per_iter": 8,
+    "warmup_iterations": 2,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip": 0.2,
+    "epochs": 8,
+    "minibatch": 512,
+    "actor_lr": 0.0002,
+    "critic_lr": 0.0005,
+    "target_kl": 0.04,
+    "bc_weight": 1.0,
+    "max_iterations": 80,
+    "dev_every": 10
+  }
+}

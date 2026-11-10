@@ -40,7 +40,7 @@ records the subsequent changes.
 
 ## Historical single-scene result
 
-The existing local run `runs/202611041916_fa_run` reports:
+The local run `runs/202611041916_fa_run` (deleted 2026-11-10) reported:
 
 | Frozen network | Target episodes | Strict successes | Lenient successes |
 |---|---:|---:|---:|
