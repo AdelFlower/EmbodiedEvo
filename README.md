@@ -5,7 +5,7 @@ and continues reinforcement learning to recover task performance.**
 
 DynamicsAdapt builds on the Agent execution and isolation infrastructure of
 EmbodiedEvo. The current case study transfers a cube-to-plate neural policy from
-source friction `1.0` to a fixed, hidden target friction `0.25` in RoboDojo/Isaac Sim.
+the nominal source to a fixed, hidden target in RoboDojo/Isaac Sim.
 The agent chooses source physics parameters, writes reward programs, and requests
 PPO training. Registered neural networks perform every formal robot rollout.
 
@@ -19,6 +19,11 @@ flowchart LR
     T --> A
     T --> E[Host selection and frozen evaluation]
 ```
+
+> **Status (2026-11-11).** The project is being migrated to a general harness in
+> which the Agent revises the source world model and PPO continues on 512 GPU
+> replicas. See [PLAN.md](PLAN.md) and [the harness spec](docs/HARNESS_SPEC.md).
+> The description below is the legacy FrictionAgent implementation.
 
 The experiment keeps target parameters private, preserves failed attempts, and
 reports task recovery separately from the evidence for a diagnosis. It uses one

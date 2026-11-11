@@ -1,0 +1,9 @@
+{
+  "kind": "cube_to_plate_target_v1",
+  "cube_material": {
+    "static_friction": "PLACEHOLDER: host-selected positive number, not the formal target",
+    "dynamic_friction": "PLACEHOLDER: host-selected positive number, not the formal target",
+    "restitution": "PLACEHOLDER: host-selected number in [0, 1], not the formal target"
+  },
+  "cube_mass_kg": "PLACEHOLDER: host-selected positive number, not the formal target"
+}

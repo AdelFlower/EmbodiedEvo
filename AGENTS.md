@@ -1,42 +1,77 @@
 # DynamicsAdapt development boundaries
 
-This project studies Agent diagnosis of dynamics differences and reinforcement
-learning recovery. Read README.md and docs/PROTOCOL.md before changing execution,
-training or evaluation behavior. FrictionAgent is the sole retained research
-case; the public CLI is `dynamicsadapt` / `python -m orchestrator`.
+DynamicsAdapt is a general, policy-driven Agent harness for diagnosing dynamics
+differences between a source simulator and a fixed target, revising the source
+simulator, and recovering target performance by continuing reinforcement learning.
+Read [PLAN.md](PLAN.md) (research design and protocol) and
+[docs/HARNESS_SPEC.md](docs/HARNESS_SPEC.md) (engineering spec and milestones)
+before changing execution, training or evaluation behavior. Cube-to-plate is the
+first task adapter; its details must not become assumptions of the general layer.
 
-- Keep the formal loop neural-policy driven: the Agent requests experiments and
-  writes analysis/reward programs; it does not directly send robot actions.
-- Preserve the current 33-dimensional observation, five-action decoder, 25 Hz
-  control, 300-step network horizon, physics, native scoring, strict/lenient
-  outcomes and termination rules unless a research change is explicitly requested.
-- The Agent may change only calibrated-source friction, mass and restitution,
-  its reward program and the requested training iterations. The target is fixed
-  by the host and hidden from the Agent. Gripper scale remains 1.0.
-- Continue the latest PPO network and both optimizers. Keep the source-only BC
-  prior, reproduction gate, warm-up rules, budgets and host candidate selection.
-  Target trajectories must not enter training gradients or demonstration data.
-- Keep target parameters, weights, simulator sources, oracle evidence and host
-  records outside the Agent workspace. Preserve raw trajectories and videos;
-  do not add a model to summarize observations.
-- Keep the Agent container separate from the GPU simulator. Run Agent-written
-  rewards only through the existing isolated reward runner and validate outputs.
+Migration status: the FrictionAgent code (`orchestrator/experiment*.py`,
+`integrations/friction_rl/`, `tasks/DynamicsAdapt/`) is the legacy implementation
+being migrated by the HARNESS_SPEC milestones. Until a milestone replaces a module,
+keep that module working for its existing callers. `docs/PROTOCOL.md` describes
+the legacy protocol only.
+
+Research boundaries:
+
+- Keep the formal loop neural-policy driven. The Agent requests experiments and
+  writes environment candidates, analysis tools and reward programs; it never
+  sends robot actions. Probes, deployments and evaluations use policy mean actions.
+- The task contract is host-fixed per task adapter: for cube-to-plate, the
+  five-action decoder, 25 Hz control, 300-step horizon, native scoring,
+  strict/lenient outcomes, termination order and `gripper_scale = 1.0`.
+  Policy observation layouts belong to the task/policy adapters, not the harness.
+- The Agent may revise the source world model (parameters, added laws, added
+  states/degrees of freedom, geometry/contact structure, dynamics programs) through
+  versioned candidates built by the host. It cannot change the target, scoring,
+  termination, observation meaning, action decoding or robot command entry points.
+- Continue the latest complete PPO training state (model, both optimizers,
+  counters). The policy lineage is linear. No BC term or demonstration data enters
+  adaptation training. Target trajectories never enter gradients, demonstrations
+  or normalization statistics.
+- The Agent decides when to train, revise, or submit. Do not add research budgets
+  or automatic early stopping; record all usage. Stopping rules are in PLAN.md.
+- Keep target specifications, weights, simulator sources, host records, oracle and
+  reference runs outside the Agent workspace. Repository documents and Git history
+  must never be mounted into the Agent container. Do not name the formal target
+  values in tracked files (host-private configs live outside Git).
+- Preserve raw trajectories and videos; do not add a model to summarize observations.
+
+Execution boundaries:
+
+- Keep the Agent container (CPU, no GPU, no weights) separate from GPU simulation
+  and PPO jobs. Agent-written rewards and dynamics programs run only in the isolated
+  runners defined by HARNESS_SPEC and are validated at their boundary.
 - Treat `vendor/` as read-only after provisioning. Put compatibility adapters in
   `simulators/` or `integrations/`; never redirect to another checkout.
 - Preserve the existing simulator wrapper and deployment environment variables.
-  Never copy credentials, environments, runtime profiles, assets or results into Git.
-- Every experiment/P0 invocation requires an explicit `--run-dir` with a
-  `YYYYMMDDHHMM` prefix. Preserve existing runs and create new attempts separately.
+  Never copy credentials, environments, runtime profiles, assets, weights or results
+  into Git.
+- Every experiment, host-preparation or probe invocation requires an explicit
+  `--run-dir` with a `YYYYMMDDHHMM` prefix. Preserve existing runs; create new
+  attempts separately.
 - Retain failed and partial attempts in their planned denominator. Agent-written
-  code failures are model failures. Crashes, timeouts and missing reports alone
-  do not prove infrastructure causation. Only confirmed infrastructure failures
-  may receive a separately documented rerun that preserves the original evidence.
+  code failures are model failures. Crashes, timeouts and missing reports alone do
+  not prove infrastructure causation. Only confirmed infrastructure failures may
+  receive a separately documented rerun that preserves the original evidence.
+
+Implementation rules (apply to every contributor, including Codex):
+
+- No defensive programming: no broad `try/except`, fallback paths, automatic
+  retries, or speculative options beyond the spec. Validate inputs once at a
+  boundary (config load, request intake, sandbox output) and trust internal calls.
+- Content hashes are identifiers for frozen versions, not verification machinery.
+  Do not add checksum re-verification layers.
+- Reuse existing functions rather than copying them; one responsibility per module;
+  keep modules near the size guidance in HARNESS_SPEC.
+- Stop at each HARNESS_SPEC milestone boundary for review.
 - Use `python -m unittest discover -s tests -v` for CPU validation. GPU checks,
   container builds and model calls are separate operations requiring resources.
 - Tests and test reports are local-only and ignored by Git. Do not force-add them.
 - Keep `SOURCE_MANIFEST.json` as historical provenance, not a current file manifest.
-  Preserve source attribution and the historical recipe text/license/checksum
-  records in Git history. Recipes are not part of the active Agent knowledge.
+  Preserve source attribution and the historical recipe records in Git history.
 
 The former Playground/Test workflow, Skills/Lessons transfer and
 `workspace-session-v1` code-execution protocol are historical functionality; they

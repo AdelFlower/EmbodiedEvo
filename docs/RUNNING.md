@@ -16,7 +16,7 @@ Copy `tasks/DynamicsAdapt/config.example.json` to a local configuration and set:
 - `agent.model`, `reasoning_effort` and `service_tier` to the intended experiment settings.
 
 The example's historical P0 paths are references, not bundled artifacts. The
-current default is one scene, source friction 1.0 and target friction 0.25, four
+current default is one scene, nominal source physics and a host-private target, four
 development episodes, 30 final episodes, and 27 required strict successes.
 [The protocol](PROTOCOL.md) defines the training, scoring, budget and isolation
 rules. Fix configuration before a new run; do not edit target physics to obtain a

@@ -12,11 +12,11 @@ The current experiment uses a single fixed layout: layout radius zero and cube
 shift `[0.03, 0.0]`. It is a sim-to-sim study using RoboDojo/Isaac Sim, not a claim
 of real-robot transfer or generalization across layouts.
 
-| Parameter | Nominal source | Example fixed target | Agent-editable source range |
+| Parameter | Nominal source | Fixed target | Agent-editable source range |
 |---|---:|---:|---:|
-| `friction_scale` | 1.0 | 0.25 | [0.05, 2.0] |
-| `mass_scale` | 1.0 | 1.0 | [0.25, 4.0] |
-| `restitution` | 0.0 | 0.0 | [0.0, 1.0] |
+| `friction_scale` | 1.0 | host-private | [0.05, 2.0] |
+| `mass_scale` | 1.0 | host-private | [0.25, 4.0] |
+| `restitution` | 0.0 | host-private | [0.0, 1.0] |
 | `gripper_scale` | 1.0 | 1.0 | Fixed at 1.0 |
 
 Nominal cube static/dynamic friction is `1.0/1.0`, nominal mass is 0.35 kg, and
