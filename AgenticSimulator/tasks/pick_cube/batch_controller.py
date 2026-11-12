@@ -31,15 +31,17 @@ class BatchPickCubeController:
         "grasp_verification_failed",
         "placement_verification_failed",
         "success",
-        "object_fell",
     )
 
-    def __init__(self, robot, cube, plate, device):
+    def __init__(self, robot, cube, plate, device, grip_force=20.0):
         self.robot = robot
         self.cube = cube
         self.plate = plate
         self.device = device
         self.n = robot.data.joint_pos.shape[0]
+        self.grip_force = float(grip_force)
+        if not 0.0 < self.grip_force <= 200.0:
+            raise ValueError("grip_force 必须大于 0，且不超过当前配置的 200 N 上限")
 
         if not robot.is_fixed_base:
             raise ValueError("要求机器人固定底座")
@@ -56,6 +58,19 @@ class BatchPickCubeController:
             robot.find_joints(f"panda_finger_joint{i}")[0][0]
             for i in (1, 2)
         ]
+        self.finger_stiffness = robot.data.joint_stiffness[
+            :, self.finger_ids
+        ].clone()
+        self.finger_damping = robot.data.joint_damping[
+            :, self.finger_ids
+        ].clone()
+        # 每个环境独立保留模式；失败后沿用结束时的模式，与单环境一致。
+        self.finger_force_mode = torch.zeros(
+            self.n, dtype=torch.bool, device=device
+        )
+        self._gripper_modes_dirty = torch.zeros(
+            (), dtype=torch.bool, device=device
+        )
         self.hand_id = robot.find_bodies("panda_hand")[0][0]
         self.jacobian_id = self.hand_id - 1
 
@@ -105,6 +120,13 @@ class BatchPickCubeController:
 
     def _enter(self, mask, new_state):
         mask = mask & ~self.terminal
+        if new_state in (self.CLOSE, self.OPEN):
+            force_mode = new_state == self.CLOSE
+            changed = mask & (self.finger_force_mode != force_mode)
+            self._gripper_modes_dirty |= changed.any()
+            self.finger_force_mode = torch.where(
+                mask, force_mode, self.finger_force_mode
+            )
         self.state = torch.where(mask, new_state, self.state)
         self.elapsed = torch.where(mask, 0.0, self.elapsed)
         self.stable = torch.where(mask, 0.0, self.stable)
@@ -295,6 +317,29 @@ class BatchPickCubeController:
             & (rot_error.norm(dim=-1) < 0.10)
         )
 
+    def _sync_gripper_modes(self):
+        # 当前 Isaac Lab 的增益写入接口会传输到 CPU。每步只检查一次，
+        # 将该步所有环境的切换合并提交；没有切换时不重复写入增益。
+        if not self._gripper_modes_dirty.item():
+            return
+
+        stiffness = torch.where(
+            self.finger_force_mode[:, None], 0.0, self.finger_stiffness
+        )
+        damping = torch.where(
+            self.finger_force_mode[:, None], 0.0, self.finger_damping
+        )
+        self.robot.write_joint_stiffness_to_sim(
+            stiffness, joint_ids=self.finger_ids
+        )
+        self.robot.write_joint_damping_to_sim(
+            damping, joint_ids=self.finger_ids
+        )
+        hand = self.robot.actuators["panda_hand"]
+        hand.stiffness.copy_(stiffness)
+        hand.damping.copy_(damping)
+        self._gripper_modes_dirty.zero_()
+
     def _send(self):
         gravity = (
             self.robot.root_physx_view
@@ -308,8 +353,18 @@ class BatchPickCubeController:
             self.last_arm,
             joint_ids=self.arm_ids,
         )
+        self._sync_gripper_modes()
         self.robot.set_joint_position_target(
             self.width[:, None].expand(-1, 2),
+            joint_ids=self.finger_ids,
+        )
+        # 指定的是每根手指关节的驱动力，负方向闭合；非力控环境发零力，
+        # 避免释放时残留闭合力。位置目标在零增益阶段不起驱动作用。
+        finger_effort = torch.where(
+            self.finger_force_mode, -self.grip_force, 0.0
+        )
+        self.robot.set_joint_effort_target(
+            finger_effort[:, None].expand(-1, 2),
             joint_ids=self.finger_ids,
         )
 
@@ -321,20 +376,12 @@ class BatchPickCubeController:
 
         self._finish(active & (self.elapsed > 20.0), False, 1)
 
-        # 桌面高 0.75 m；相对底座下降超过 0.15 m 算掉落。
-        floor_limit = self.robot.data.root_pos_w[:, 2] - 0.15
-        fell = (
-            (self.cube.data.root_pos_w[:, 2] < floor_limit)
-            | (self.plate.data.root_pos_w[:, 2] < floor_limit)
-        )
-        self._finish(fell, False, 7)
-
         waiting = self.state == self.WAIT
         speed = torch.maximum(
             self.cube.data.root_lin_vel_w.norm(dim=-1),
             self.plate.data.root_lin_vel_w.norm(dim=-1),
         )
-        settled = (self.elapsed > 0.5) & (speed < 0.02)
+        settled = (self.elapsed > 0.3) & (speed < 0.02)
         self.stable = torch.where(
             waiting,
             torch.where(settled, self.stable + dt, 0.0),
@@ -477,6 +524,7 @@ class BatchPickCubeController:
                 ),
                 "reason": self.REASON_NAMES[reasons[i]],
                 "simulation_seconds": times[i],
+                "grip_force_per_finger_n": self.grip_force,
             }
             for i in range(self.n)
         ]
@@ -488,6 +536,7 @@ class BatchPickCubeController:
         unfinished = self.n - succeeded - failed
 
         return {
+            "grip_force_per_finger_n": self.grip_force,
             "succeeded": succeeded,
             "failed": failed,
             "unfinished": unfinished,

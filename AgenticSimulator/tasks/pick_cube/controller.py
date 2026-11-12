@@ -375,7 +375,7 @@ class PickCubeController:
                 self.cube.data.root_lin_vel_w.norm().item(),
                 self.plate.data.root_lin_vel_w.norm().item(),
             )
-            if self.elapsed > 0.5 and speed < 0.02:
+            if self.elapsed > 0.3 and speed < 0.02:
                 self.stable_time += dt
             else:
                 self.stable_time = 0.0

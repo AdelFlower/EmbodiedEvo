@@ -153,6 +153,10 @@ def main():
     parser.add_argument("--scene-config", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument(
+        "--grip-force", type=float, default=20.0,
+        help="闭合和搬运时，每根手指向内施加的驱动力，单位 N",
+    )
     parser.add_argument("--warmup-steps", type=int, default=600)
     parser.add_argument(
         "--steps", type=int, default=14400,
@@ -169,6 +173,8 @@ def main():
 
     if args.num_envs < 1 or args.steps < 1 or args.warmup_steps < 0:
         parser.error("环境数、测量步数必须为正，预热步数不能为负")
+    if not 0.0 < args.grip_force <= 200.0:
+        parser.error("--grip-force 必须大于 0，且不超过当前配置的 200 N 上限")
     if not args.device.startswith("cuda"):
         parser.error("这个基准要求使用 GPU 物理")
     if args.env_spacing < 2.0:
@@ -198,6 +204,8 @@ def main():
         "seed": args.seed,
         "render_each_step": False,
         "workload": "batch_pick_cube_no_cameras",
+        "gripper_control": "constant_joint_force_close_carry_pd_open",
+        "grip_force_per_finger_n": args.grip_force,
         "requested_steps": args.steps,
         "warmup_steps": args.warmup_steps,
         "warmup_workload": "hold_default_pose_with_gravity_compensation",
@@ -494,6 +502,7 @@ def main():
             cube=scene["cube"],
             plate=scene["plate"],
             device=sim.device,
+            grip_force=args.grip_force,
         )
         torch.cuda.synchronize()
         allocated_at_start = torch.cuda.memory_allocated(sim.device)

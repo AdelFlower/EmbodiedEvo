@@ -40,6 +40,6 @@ objects:
       angular_damping: 0.05
 
     material:
-      static_friction: 0.30
-      dynamic_friction: 0.10
+      static_friction: 0.8
+      dynamic_friction: 0.8
       restitution: 0.0
