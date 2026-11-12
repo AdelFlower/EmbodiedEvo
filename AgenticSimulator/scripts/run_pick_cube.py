@@ -57,7 +57,7 @@ def main():
 
         sim = sim_utils.SimulationContext(
             sim_utils.SimulationCfg(
-                dt=1 / 120,
+                dt=1 / 200,
                 device=args.device,
             )
         )

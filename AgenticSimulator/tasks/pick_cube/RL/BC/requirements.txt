@@ -1,0 +1,2 @@
+# 额外存储依赖；torch/numpy/pyyaml 使用现有 Isaac Lab 或训练环境版本。
+h5py>=3.11,<4

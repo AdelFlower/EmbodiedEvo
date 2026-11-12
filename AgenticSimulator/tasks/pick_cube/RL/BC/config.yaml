@@ -1,0 +1,29 @@
+# BC 训练默认配置。命令行同名参数优先于此文件。
+# dataset 和 run-dir 每次通过命令行显式指定，不写入默认配置。
+
+# 网络结构：48 -> hidden_dim -> hidden_dim -> 8。
+hidden_dim: 256
+
+# 训练参数。
+epochs: 100
+batch_size: 256
+lr: 0.0003
+seed: 42
+
+# 按完整 episode 划分验证集；默认只使用成功轨迹。
+val_fraction: 0.1
+
+# Dataset 存放在 CPU 内存；每个 batch 移到 device 进行训练。
+# 有可用 GPU 时，可通过 --device cuda:0 覆盖。
+device: cpu
+num_workers: 0
+
+# 位姿标签缩放：训练时除以尺度，predict() 中乘回。
+# 单位分别为 m 和 rad，不代表动作上限。
+position_scale: 0.01
+rotation_scale: 0.1
+
+# 开合分类损失、归一化力度回归损失的权重。
+# 力度标签已按 schema 映射至 [-1, 1]，这里不再缩放。
+grip_loss_weight: 1.0
+force_loss_weight: 1.0
