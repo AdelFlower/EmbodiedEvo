@@ -1,0 +1,45 @@
+builder: AgenticSimulator.scenes.plate_cube:build_scene
+
+camera:
+  eye: [0.0, -0.8, 1.8]
+  target: [0.0, 0.0, 0.75]
+
+objects:
+  - name: Plate
+    asset: plate/object.usdz
+    position: [-0.10, 0.0, 0.78]
+    orientation: [1.0, 0.0, 0.0, 0.0]
+    scale: [1.0, 1.0, 1.0]
+
+    physics:
+      mass: 0.2
+      gravity: true
+      linear_damping: 0.01
+      angular_damping: 0.05
+
+    material:
+      static_friction: 0.8
+      dynamic_friction: 0.8
+      restitution: 0.0
+
+  - name: Cube
+    asset: cube/object.usdz
+    position_range:
+      x: [0.00, 0.30]
+      y: [-0.15, 0.15]
+      z: [0.78, 0.78] 
+
+    yaw_range_deg: [0.0, 360.0]
+
+    scale: [1.0, 1.0, 1.0]
+
+    physics:
+      mass: 0.35
+      gravity: true
+      linear_damping: 0.01
+      angular_damping: 0.05
+
+    material:
+      static_friction: 0.10
+      dynamic_friction: 0.10
+      restitution: 0.0

@@ -46,3 +46,5 @@ auth.json
 *.key
 /.codex/
 /configs/*.local.*
+
+/AgenticSimulator/assets/
