@@ -15,8 +15,15 @@ def main():
     )
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--scene-config", required=True)
+    parser.add_argument(
+    "--grip-force",
+    type=float,
+    default=20.0,
+    help="闭合和搬运时，每根手指向内施加的驱动力，单位 N",)
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
+    if not 0.0 < args.grip_force <= 200.0:
+        parser.error("--grip-force 必须大于 0, 且不超过当前配置的 200 N 上限")
 
     # 读取场景配置。
     config_path = Path(args.scene_config).resolve()
@@ -83,6 +90,7 @@ def main():
             cube=scene.entities["cube"],
             plate=scene.entities["plate"],
             device=sim.device,
+            grip_force=args.grip_force,
         )
 
         sim.stage.Export(str(run_dir / "scene.usda"))

@@ -17,7 +17,7 @@ from isaaclab.utils.math import (
 class PickCubeController:
     """只适用于当前单环境、固定底座 Franka 的抓放控制器。"""
 
-    def __init__(self, robot, cube, plate, device):
+    def __init__(self, robot, cube, plate, device, grip_force=20.0):
         self.robot = robot
         self.cube = cube
         self.plate = plate
@@ -35,6 +35,16 @@ class PickCubeController:
             robot.find_joints(f"panda_finger_joint{i}")[0][0]
             for i in (1, 2)
         ]
+        self.grip_force = float(grip_force)
+        self.finger_effort = 0.0
+
+        # 保存原来的位置驱动参数，张开时恢复。
+        self.finger_stiffness = robot.data.joint_stiffness[
+            :, self.finger_ids
+        ].clone()
+        self.finger_damping = robot.data.joint_damping[
+            :, self.finger_ids
+        ].clone()
         self.hand_id = robot.find_bodies("panda_hand")[0][0]
 
         # 固定底座在 PhysX Jacobian 中不占一行。
@@ -73,6 +83,16 @@ class PickCubeController:
         self.cube_start = None
 
     def _enter(self, state):
+        if state == "close":
+            # 关闭手指 PD，改为持续向内施力。
+            self._set_gripper_force_mode(True)
+            self.finger_effort = -self.grip_force
+
+        elif state == "open":
+            # 清除闭合力，恢复原来的张开位置控制。
+            self.finger_effort = 0.0
+            self._set_gripper_force_mode(False)
+
         self.state = state
         self.elapsed = 0.0
         self.stable_time = 0.0
@@ -88,6 +108,7 @@ class PickCubeController:
             "success": success,
             "reason": reason,
             "last_state": self.state,
+            "grip_force_per_finger_n": self.grip_force,
         }
         self.state = "done" if success else "failed"
         print(f"[pick_cube] {self.result}", flush=True)
@@ -116,6 +137,17 @@ class PickCubeController:
         )
         self.robot.set_joint_position_target(
             fingers,
+            joint_ids=self.finger_ids,
+        )
+
+        finger_effort = torch.full(
+            (1, 2),
+            self.finger_effort,
+            device=self.device,
+        )
+
+        self.robot.set_joint_effort_target(
+            finger_effort,
             joint_ids=self.finger_ids,
         )
 
@@ -300,6 +332,29 @@ class PickCubeController:
             position_error.norm().item() < tolerance
             and rotation_error.norm().item() < 0.10
         )
+
+    def _set_gripper_force_mode(self, enabled):
+        if enabled:
+            stiffness = torch.zeros_like(self.finger_stiffness)
+            damping = torch.zeros_like(self.finger_damping)
+        else:
+            stiffness = self.finger_stiffness
+            damping = self.finger_damping
+
+        # 修改物理引擎中的手指驱动参数。
+        self.robot.write_joint_stiffness_to_sim(
+            stiffness,
+            joint_ids=self.finger_ids,
+        )
+        self.robot.write_joint_damping_to_sim(
+            damping,
+            joint_ids=self.finger_ids,
+        )
+
+        # 同步隐式执行器的参数，保持其驱动力估计与设置一致。
+        hand = self.robot.actuators["panda_hand"]
+        hand.stiffness.copy_(stiffness)
+        hand.damping.copy_(damping)
 
     def step(self, dt):
         """每个物理步进前调用一次。"""
