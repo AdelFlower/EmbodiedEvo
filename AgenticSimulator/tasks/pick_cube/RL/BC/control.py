@@ -8,7 +8,7 @@ from isaaclab.utils.math import (
     apply_delta_pose,
     combine_frame_transforms,
     compute_pose_error,
-    quat_apply_inverse,
+    quat_apply,
     subtract_frame_transforms,
 )
 
@@ -46,6 +46,8 @@ class BCExpertController(BatchExpert):
     def observation(self):
         robot = self.robot
         root = robot.data.root_state_w[:, :7]
+        # 固定底座的单位四元数：共轭即逆，兼容没有 quat_apply_inverse 的 Isaac Lab。
+        inverse_root_quaternion = torch.cat((root[:, 3:4], -root[:, 4:7]), dim=-1)
 
         def pose_in_base(pose):
             position, quaternion = subtract_frame_transforms(
@@ -59,7 +61,7 @@ class BCExpertController(BatchExpert):
             robot.data.joint_pos[:, self.finger_ids],
             pose_in_base(robot.data.body_state_w[:, self.hand_id, :7]),
             pose_in_base(self.cube.data.root_state_w[:, :7]),
-            quat_apply_inverse(root[:, 3:7], self.cube.data.root_lin_vel_w),
+            quat_apply(inverse_root_quaternion, self.cube.data.root_lin_vel_w),
             pose_in_base(self.plate.data.root_state_w[:, :7]),
             self.previous_action,
         ), dim=-1)

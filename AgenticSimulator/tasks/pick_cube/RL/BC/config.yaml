@@ -1,16 +1,22 @@
-# BC 训练默认配置。命令行同名参数优先于此文件。
-# dataset 和 run-dir 每次通过命令行显式指定，不写入默认配置。
+# GRU BC 配置：train.py 读取顶层训练参数，eval_bc.py 读取 eval 区块。
+# 两个入口默认读取本文件；--config 可指定其他 YAML，命令行同名参数优先。
+# 训练 --dataset、评估 --checkpoint 及各自 --run-dir 必须由命令行显式指定。
+# --run-dir 名称以有效 YYYYMMDDHHMM 开头，已有目录不会覆盖。
 
-# 网络结构：48 -> hidden_dim -> hidden_dim -> 8。
+# 网络结构：48 -> hidden_dim -> GRU(recurrent_dim) -> hidden_dim -> 8。
 hidden_dim: 256
+recurrent_dim: 128
+# 单向、单层 GRU；隐藏状态每条 episode 重置。当前实现不支持层数/dropout 配置。
 
 # 训练参数。
 epochs: 100
-batch_size: 256
+# batch_size 按完整 episode 计数，轨迹内部保持时间顺序。
+batch_size: 16
 lr: 0.0003
 seed: 42
 
-# 按完整 episode 划分验证集；默认只使用成功轨迹。
+# 按完整 episode 划分验证集；只使用成功且完整的轨迹。
+# 按时间顺序训练整条轨迹，padding 不计入损失；seed 控制划分和训练随机数。
 val_fraction: 0.1
 
 # Dataset 存放在 CPU 内存；每个 batch 移到 device 进行训练。
@@ -27,3 +33,20 @@ rotation_scale: 0.1
 # 力度标签已按 schema 映射至 [-1, 1]，这里不再缩放。
 grip_loss_weight: 1.0
 force_loss_weight: 1.0
+
+# 单场景评估默认值。路径相对于启动命令时的工作目录（建议仓库根目录）。
+# 网络结构、观测均值/标准差和动作缩放全部从 checkpoint 读取；
+# 修改上面的训练参数不会覆盖评估所加载的模型。
+eval:
+  scene_config: AgenticSimulator/scenes/configs/plate_cube.yaml
+  device: cuda:0              # 此入口需要 Isaac Lab GPU 物理环境
+  seed: 43                   # 与 episode_id 一起决定场景采样
+  episode_id: 0
+  max_seconds: 30.0          # rollout 仿真时间上限，不包含预热
+  warmup_seconds: 1.0        # 预热期间不调用策略、不推进 GRU 记忆
+  headless: false            # 默认显示 GUI；--gui 可覆盖 true
+  exit_on_done: false        # GUI 完成后保持画面；headless 时强制退出
+  no_real_time: false        # GUI 默认实时播放；--real-time 可覆盖 true
+
+# 任务固定约定：50 Hz 策略、200 Hz 物理、每指 10 N，保持原有成功判据。
+# 这些不是可调配置项；动作 position_scale/rotation_scale 也不是执行限幅。

@@ -77,12 +77,67 @@ data/YYYYMMDDHHMM_bc_collect/
 ```bash
 python -m AgenticSimulator.tasks.pick_cube.RL.BC.train \
   --dataset AgenticSimulator/tasks/pick_cube/RL/BC/data/你的采集运行目录 \
-  --run-dir "runs/$(date +%Y%m%d%H%M)_bc_train" --device cuda:0
+  --run-dir "AgenticSimulator/tasks/pick_cube/RL/BC/runs/$(date +%Y%m%d%H%M)_gru_train" \
+  --device cuda:0
 ```
 
 仍按完整 episode 划分训练/验证，允许同一分片内包含两组 episode。
 默认只使用成功且完整的轨迹；失败和中断轨迹记录在 `split.json` 的排除项中。
 观测统计量只由训练集计算。原有 NPZ 格式也可以读取。
+
+当前模型为 `GRUBCPolicy`：48 维观测编码后输入单向、单层 GRU，再输出
+8 维动作。每条完整轨迹从零隐藏状态开始，轨迹内部保持时间顺序；补齐帧
+不参与损失或指标计算。`batch_size: 16` 表示 16 条轨迹；`hidden_dim: 256`
+为编码/输出层宽度，`recurrent_dim: 128` 为 GRU 记忆维度。
+
+训练默认读取 `config.yaml` 顶层参数，评估读取同一文件的 `eval:` 区块；
+两个入口都可用 `--config` 指定另一份文件，命令行参数优先。
+训练必须显式提供 `--dataset` 和 `--run-dir`；评估必须显式提供
+`--checkpoint` 和 `--run-dir`。这些运行路径不从 YAML 自动填充。
+
+## 模型可视化
+
+使用训练 checkpoint 在新采样的单场景中闭环执行；默认打开 GUI，并在结束后
+暂停物理、保持画面。控制动作来自模型，专家阶段和目标路点不参与控制：
+
+```bash
+python -m AgenticSimulator.tasks.pick_cube.RL.BC.eval_bc \
+  --checkpoint AgenticSimulator/tasks/pick_cube/RL/BC/runs/你的GRU训练运行目录/checkpoints/best.pt \
+  --run-dir "$(date +%Y%m%d%H%M)_bc_eval" \
+  --device cuda:0 --seed 43
+```
+
+只提供运行目录名时，保存到 `BC/evals/<run-dir>/`。也可指定 BC 内的完整路径；
+目录名必须包含有效的时间前缀，已有目录拒绝覆盖。`--scene-config` 默认仍为
+`AgenticSimulator/scenes/configs/plate_cube.yaml`。`--seed` 和 `--episode-id`
+决定物体初始位姿，可用于复现采样。
+
+评估要求 checkpoint 中 `model_type: gru`，旧 MLP checkpoint 会明确报错，
+需要使用新训练生成的 GRU 权重。模型结构及归一化从 checkpoint 恢复，
+不会被当前 YAML 顶层训练参数覆盖。预热结束后隐藏状态初始化为零，
+随后每个 50 Hz 控制步更新一次，四个物理子步不额外更新记忆。
+每次独立评估都重新初始化，不继承其他场景的隐藏状态。
+
+模型使用 checkpoint 自带的均值/标准差和位姿缩放。动作频率为 50 Hz，
+200 Hz 物理步跟踪固定目标，力度按任务约定固定为每指 10 N：执行前将
+闭合力度标签置为 0、打开力度标签置为 -1，下一观测保存实际执行的动作。
+
+原生几何阈值保持 XY < 3 cm、底部中心垂直差 < 1 cm、连续稳定 > 0.5 s。
+BC 没有专家阶段，因此评估器用实际观察到的抓取抬升（至少 6 cm，抓取距离
+不超过 5 cm）与释放代替 LIFT/VERIFY 阶段门控。这里不执行专家逐阶段超时；
+BC 使用 `--max-seconds` 指定的全局 rollout 仿真时间上限，默认 30 s。
+该独立 BC rollout 不是 workspace-session-v1 的 Test 运行。
+
+运行目录保留 checkpoint 路径、场景配置快照、初始/最终物理状态、
+`result.json` 和 `rollout.npz`。轨迹记录原始观测、模型预测动作、实际执行动作
+及仿真时间。异常保留当前轨迹和 `error.txt`，不会调用专家接管或自动重试。
+
+GUI 默认按实时速度播放；`--no-real-time` 取消实时限速。任务结束后结果先保存，
+视口继续处理鼠标事件但不推进物理。关闭窗口或 Ctrl+C 退出。若需保存后自动
+退出，添加 `--exit-on-done`；`--headless` 也会自动退出。落盘后直接结束仿真进程，
+避开已观察到的 Kit 关闭阻塞。
+配置设为自动退出后，可用 `--no-exit-on-done` 恢复 GUI 保持画面；
+`--real-time` 可覆盖 `eval.no_real_time: true`，`--gui` 可覆盖无窗口配置。
 
 ## CPU 检查
 

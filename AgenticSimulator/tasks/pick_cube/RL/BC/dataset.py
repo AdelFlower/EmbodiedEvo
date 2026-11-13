@@ -9,6 +9,7 @@ episode_*.npz 或 episodes/*.npz。每条完整 episode 包含：
 - success: 标量布尔值，记录该 episode 是否成功。
 
 按整条 episode 划分训练集和验证集，仅从训练集计算观测统计量。
+每个样本是一条完整轨迹；DataLoader 返回补齐后的观测、动作和有效帧 mask。
 HDF5 中 complete=False 的轨迹始终排除，并记录在 split 中。
 本模块不修改数据文件、不标准化观测，也不缩放动作训练标签。
 """
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from .schema import (
@@ -109,7 +111,7 @@ def _validate_action_values(actions: np.ndarray, name: str, path: Path):
 
 
 class ExpertDataset(Dataset):
-    """将选中的完整轨迹载入 CPU 内存，按单个时间步提供训练样本。"""
+    """将轨迹载入 CPU 内存，每次返回一条按时间排列的完整 episode。"""
 
     def __init__(self, episode_paths: Sequence[Path | EpisodeRef]):
         if not episode_paths:
@@ -153,19 +155,48 @@ class ExpertDataset(Dataset):
             observations.append(torch.from_numpy(obs))
             actions.append(torch.from_numpy(act))
 
+        self.episode_offsets = [0]
+        for episode in observations:
+            self.episode_offsets.append(self.episode_offsets[-1] + len(episode))
+
+        # 连续存储真实帧，归一化统计不包含 collate 时添加的 padding。
         self.observations = torch.cat(observations, dim=0)
         self.actions = torch.cat(actions, dim=0)
 
     def __len__(self) -> int:
-        return self.observations.shape[0]
+        return len(self.episode_offsets) - 1
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.observations[index], self.actions[index]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError("episode index out of range")
+        start, end = self.episode_offsets[index:index + 2]
+        return self.observations[start:end], self.actions[start:end]
+
+    @property
+    def num_frames(self) -> int:
+        """真实帧总数，与 __len__ 返回的 episode 数区分。"""
+        return self.observations.shape[0]
+
+
+def collate_episodes(batch):
+    """返回 observations[B,T,48]、actions[B,T,8]、bool mask[B,T]。
+
+    在每条轨迹末尾补零。mask=True 为真实帧；调用方须在计算损失和
+    指标时排除补齐帧，并在每个完整 episode 开始时重置循环网络状态。
+    """
+    observations, actions = zip(*batch)
+    lengths = torch.tensor([len(obs) for obs in observations], dtype=torch.long)
+    observations = pad_sequence(observations, batch_first=True, padding_value=0.0)
+    actions = pad_sequence(actions, batch_first=True, padding_value=0.0)
+    mask = torch.arange(observations.shape[1])[None, :] < lengths[:, None]
+    return observations, actions, mask
 
 
 def build_dataloaders(
     data_dir: str | Path,
-    batch_size: int = 256,
+    batch_size: int = 16,
     val_fraction: float = 0.1,
     seed: int = 42,
     num_workers: int = 0,
@@ -175,6 +206,8 @@ def build_dataloaders(
 
     默认仅使用明确标记为成功的轨迹，排除的失败轨迹列入 split。
     至少需要两条符合筛选条件的 episode，保证两组均非空。
+    batch_size 为 episode 数；shuffle 只打乱轨迹顺序，不打乱轨迹内的帧。
+    两个 loader 均返回 (observations, actions, mask)，形状见 collate_episodes。
     """
     if batch_size <= 0 or num_workers < 0:
         raise ValueError("batch_size 必须大于零，num_workers 不能小于零")
@@ -247,6 +280,7 @@ def build_dataloaders(
         num_workers=num_workers,
         generator=generator,
         drop_last=False,
+        collate_fn=collate_episodes,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -254,6 +288,7 @@ def build_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         drop_last=False,
+        collate_fn=collate_episodes,
     )
 
     split = {
@@ -265,8 +300,8 @@ def build_dataloaders(
         "train_episodes": [p.label(root) for p in train_paths],
         "val_episodes": [p.label(root) for p in val_paths],
         "excluded_episodes": excluded_episodes,
-        "train_samples": len(train_dataset),
-        "val_samples": len(val_dataset),
+        "train_samples": train_dataset.num_frames,
+        "val_samples": val_dataset.num_frames,
     }
 
     return train_loader, val_loader, stats, split

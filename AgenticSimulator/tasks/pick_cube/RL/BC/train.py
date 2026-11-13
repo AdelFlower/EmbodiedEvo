@@ -1,4 +1,4 @@
-"""离线训练 pick-cube BC 策略，不启动模拟器。"""
+"""按完整 episode 离线训练 pick-cube GRU BC 策略，不启动模拟器。"""
 
 import argparse
 import csv
@@ -13,7 +13,7 @@ import yaml
 from torch.nn import functional as F
 
 from .dataset import build_dataloaders
-from .model import BCPolicy
+from .model import GRUBCPolicy
 from .schema import (
     ACTION_DIM,
     ACTION_SLICES,
@@ -38,8 +38,9 @@ def parse_args():
     parser.add_argument("--run-dir", type=Path, required=True)
 
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=16, help="每个 batch 的完整 episode 数")
     parser.add_argument("--hidden-dim", type=int, default=256)
+    parser.add_argument("--recurrent-dim", type=int, default=128, help="GRU 隐藏状态维度")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -69,6 +70,9 @@ def parse_args():
         config = {}
     if not isinstance(config, dict):
         parser.error("配置文件顶层必须是键值映射")
+    # 共用配置中的 eval 区块由评估入口读取，不作为训练或模型参数。
+    if not isinstance(config.pop("eval", {}), dict):
+        parser.error("eval 配置项必须是键值映射")
 
     # YAML 使用与 argparse 相同的字段名，例如 batch_size。
     # 运行目录、数据来源和配置文件自身仍要求由命令行指定。
@@ -90,8 +94,8 @@ def parse_args():
     args = parser.parse_args()
     args.config = config_path
 
-    if min(args.epochs, args.batch_size, args.hidden_dim) <= 0:
-        parser.error("epochs、batch-size、hidden-dim 必须大于零")
+    if min(args.epochs, args.batch_size, args.hidden_dim, args.recurrent_dim) <= 0:
+        parser.error("epochs、batch-size、hidden-dim、recurrent-dim 必须大于零")
     if args.lr <= 0 or args.num_workers < 0:
         parser.error("lr 必须大于零，num-workers 不能小于零")
     if not 0.0 < args.val_fraction < 1.0:
@@ -113,7 +117,7 @@ def parse_args():
 
 
 def compute_losses(predictions, targets, args):
-    """计算位姿回归、夹爪分类和力度回归损失。"""
+    """对已筛选的有效帧 [N, 8] 计算位姿、夹爪和力度损失。"""
     pos = ACTION_SLICES["delta_pos"]
     rot = ACTION_SLICES["delta_rot"]
 
@@ -166,29 +170,40 @@ def run_epoch(
     args,
     optimizer=None,
 ):
-    """optimizer 为 None 时执行验证，不更新参数。"""
+    """每个 batch 从零记忆处理完整轨迹；指标按有效帧数加权。
+
+    optimizer 为 None 时执行验证，不更新参数。隐藏状态不跨 episode
+    或 batch 传递；损失只使用 mask=True 的真实帧。
+    """
     training = optimizer is not None
     model.train(training)
 
     totals = {}
     sample_count = 0
 
-    for observations, actions in loader:
+    for observations, actions, mask in loader:
         observations = observations.to(device=device, dtype=torch.float32)
         actions = actions.to(device=device, dtype=torch.float32)
+        mask = mask.to(device=device)
+        if mask.dtype != torch.bool or mask.shape != observations.shape[:2]:
+            raise ValueError("有效帧 mask 必须为与观测对应的 bool [B, T]")
+        valid_frames = int(mask.sum().item())
+        if valid_frames == 0:
+            raise ValueError("batch 中没有有效帧")
 
         # 只标准化输入；动作标签保持 schema 中的定义。
         observations = (observations - obs_mean) / obs_std
+        observations = observations.masked_fill(~mask.unsqueeze(-1), 0.0)
 
-        targets = actions.clone()
-        targets[..., :6] = actions[..., :6] / model.pose_scale
+        targets = actions[mask].clone()
+        targets[..., :6] /= model.pose_scale
 
         if training:
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(training):
-            predictions = model(observations)
-            losses = compute_losses(predictions, targets, args)
+            predictions, _ = model(observations, hidden=None)
+            losses = compute_losses(predictions[mask], targets, args)
 
             if not torch.isfinite(losses["loss"]).item():
                 raise RuntimeError("损失出现 NaN/Inf，停止本次训练")
@@ -200,13 +215,12 @@ def run_epoch(
                 )
                 optimizer.step()
 
-        batch_size = observations.shape[0]
-        sample_count += batch_size
+        sample_count += valid_frames
 
         for name, value in losses.items():
             totals[name] = (
                 totals.get(name, 0.0)
-                + value.detach().item() * batch_size
+                + value.detach().item() * valid_frames
             )
 
     if sample_count == 0:
@@ -257,7 +271,13 @@ def train(args, run_dir):
         encoding="utf-8",
     )
 
-    model = BCPolicy(hidden_dim=args.hidden_dim, position_scale=args.position_scale, rotation_scale=args.rotation_scale).to(device)
+    model_config = {
+        "hidden_dim": args.hidden_dim,
+        "recurrent_dim": args.recurrent_dim,
+        "position_scale": args.position_scale,
+        "rotation_scale": args.rotation_scale,
+    }
+    model = GRUBCPolicy(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     checkpoint_dir = run_dir / "checkpoints"
@@ -312,7 +332,8 @@ def train(args, run_dir):
                 "schema_version": SCHEMA_VERSION,
                 "obs_dim": OBS_DIM,
                 "action_dim": ACTION_DIM,
-                "model_config": {"hidden_dim": args.hidden_dim},
+                "model_type": "gru",
+                "model_config": model_config,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "normalization": normalization,
@@ -321,6 +342,7 @@ def train(args, run_dir):
                 "epoch": epoch,
                 "best_val_loss": best_val_loss,
                 "hidden_dim": args.hidden_dim,
+                "recurrent_dim": args.recurrent_dim,
                 "position_scale": args.position_scale,
                 "rotation_scale": args.rotation_scale,
             }
