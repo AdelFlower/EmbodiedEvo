@@ -39,11 +39,33 @@ python AgenticSimulator/tasks/lift_cube/IsaacLab-Arena/train.py \
 `--checkpoint /absolute/path/model_1999.pt` 从已有模型恢复到新的运行目录。
 去掉 `--headless` 可打开图形窗口。
 
+## 可视化已训练模型
+
+`play.py` 只加载 checkpoint 执行策略，不继续训练。读取 checkpoint 同级
+`params/env.yaml` 和 `params/agent.yaml`，默认显示一个环境并按真实时间运行。
+从仓库根目录执行（将 `CHECKPOINT` 替换为实际文件）：
+
+```bash
+conda activate isaac-sim
+CHECKPOINT="runs/<训练目录>/logs/rsl_rl/generic_experiment/<时间目录>/model_1600.pt"
+python AgenticSimulator/tasks/lift_cube/IsaacLab-Arena/play.py \
+  --checkpoint "$CHECKPOINT" \
+  --run-dir "runs/$(date +%Y%m%d%H%M)_lift_cube_play" \
+  --device cuda:0 --num_envs 1
+```
+
+不加 `--headless` 会打开 Isaac Sim 窗口；关闭窗口结束。
+方块和机器人每回合自动重置，目标位置继续按训练配置采样。
+`--steps 500` 限制播放步数，`--no-real-time` 取消真实时间限速。
+无桌面环境时可以加 `--headless --steps 50` 验证加载和推理，但不会显示窗口。
+日志位于播放运行目录中的 `play.log`，正常完成后写入 `playback_complete.json`。
+
 ## 文件
 
 | 文件 | 用途 |
 | --- | --- |
 | `train.py` | 检查运行目录、保存原始日志并启动训练 |
+| `play.py`、`isaaclab_arena/play.py` | 加载模型和训练配置，显示策略执行 |
 | `isaaclab_arena/train.py` | 启动本地 Isaac Sim、配置任务并调用 RSL-RL |
 | `isaaclab_arena/env_cfg.py` | 场景、观测、奖励、目标和终止配置 |
 | `isaaclab_arena/robot_cfg.py` | Franka 动作、重置与末端传感器 |

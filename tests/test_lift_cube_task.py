@@ -157,3 +157,40 @@ class LiftCubeLauncherTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.launcher.main(["--run-dir", "202611131200_test", "--task", "another_task"])
             run.assert_not_called()
+
+
+class LiftCubePlaybackTests(unittest.TestCase):
+    def test_saved_config_retains_native_tuple_and_slice_types(self):
+        spec = importlib.util.spec_from_file_location("cube_playback", TASK_ROOT / "isaaclab_arena/play.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "env.yaml"
+            config.write_text("eye: !!python/tuple [1, 2, 3]\nids: !!python/object/apply:builtins.slice [0, null, 1]\n")
+            loaded = module.load_config(config)
+        self.assertEqual(loaded["eye"], (1, 2, 3))
+        self.assertEqual((loaded["ids"].start, loaded["ids"].stop, loaded["ids"].step), (0, None, 1))
+
+    def test_playback_resolves_checkpoint_and_keeps_training_files_unchanged(self):
+        spec = importlib.util.spec_from_file_location("cube_play", TASK_ROOT / "play.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint = root / "training" / "model_1600.pt"
+            checkpoint.parent.mkdir()
+            checkpoint.write_bytes(b"original checkpoint")
+            (checkpoint.parent / "params").mkdir()
+            for name in ["env.yaml", "agent.yaml"]:
+                (checkpoint.parent / "params" / name).write_text("{}\n")
+            run_dir = root / "202611131900_play"
+            def play(command, **kwargs):
+                self.assertIn("isaaclab_arena.play", command)
+                self.assertEqual(command[command.index("--checkpoint") + 1], str(checkpoint.resolve()))
+                self.assertEqual(kwargs["cwd"], run_dir)
+                (run_dir / "playback_complete.json").write_text("{}\n")
+                return subprocess.CompletedProcess(command, 0)
+            with patch.object(launcher.subprocess, "run", side_effect=play):
+                self.assertEqual(launcher.main(["--checkpoint", str(checkpoint), "--run-dir", str(run_dir)]), 0)
+            self.assertEqual(checkpoint.read_bytes(), b"original checkpoint")
+            self.assertTrue((run_dir / "play.log").is_file())
