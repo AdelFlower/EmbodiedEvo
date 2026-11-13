@@ -3,9 +3,11 @@
 # 训练 --dataset、评估 --checkpoint 及各自 --run-dir 必须由命令行显式指定。
 # --run-dir 名称以有效 YYYYMMDDHHMM 开头，已有目录不会覆盖。
 
-# 网络结构：48 -> hidden_dim -> GRU(recurrent_dim) -> hidden_dim -> 8。
+# 原始观测仍为 48 维；默认只使用前 40 维物理观测，不输入上一条专家动作。
+# 网络结构：40 -> hidden_dim -> GRU(recurrent_dim) -> hidden_dim -> 8。
 hidden_dim: 256
 recurrent_dim: 128
+use_previous_action: false
 # 单向、单层 GRU；隐藏状态每条 episode 重置。当前实现不支持层数/dropout 配置。
 
 # 训练参数。
@@ -48,5 +50,6 @@ eval:
   exit_on_done: false        # GUI 完成后保持画面；headless 时强制退出
   no_real_time: false        # GUI 默认实时播放；--real-time 可覆盖 true
 
-# 任务固定约定：50 Hz 策略、200 Hz 物理、每指 10 N，保持原有成功判据。
+# 任务固定约定：50 Hz 策略、200 Hz 物理，保持原有成功判据。
+# 专家示范每指 10 N；策略通过第 8 维控制每指 0–20 N。
 # 这些不是可调配置项；动作 position_scale/rotation_scale 也不是执行限幅。

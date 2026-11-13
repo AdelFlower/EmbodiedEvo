@@ -41,6 +41,8 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16, help="每个 batch 的完整 episode 数")
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--recurrent-dim", type=int, default=128, help="GRU 隐藏状态维度")
+    parser.add_argument("--use-previous-action", action=argparse.BooleanOptionalAction,
+                        default=False, help="将上一动作输入网络；默认只用物理观测")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -77,7 +79,7 @@ def parse_args():
     # YAML 使用与 argparse 相同的字段名，例如 batch_size。
     # 运行目录、数据来源和配置文件自身仍要求由命令行指定。
     configurable = {
-        action.dest: action.type or str
+        action.dest: (bool if isinstance(action, argparse.BooleanOptionalAction) else action.type or str)
         for action in parser._actions
         if action.dest not in {"help", "config", "dataset", "run_dir"}
     }
@@ -274,6 +276,7 @@ def train(args, run_dir):
     model_config = {
         "hidden_dim": args.hidden_dim,
         "recurrent_dim": args.recurrent_dim,
+        "use_previous_action": args.use_previous_action,
         "position_scale": args.position_scale,
         "rotation_scale": args.rotation_scale,
     }

@@ -1,0 +1,88 @@
+# Standalone Isaac Lab training; run from the repository root.
+scene_config: AgenticSimulator/scenes/configs/plate_cube.yaml
+seed: 42
+device: cuda:0
+
+env:
+  num_envs: 512
+  env_spacing: 2.0
+  max_seconds: 30.0
+  warmup_seconds: 1.0
+  # Curriculum starts from expert-generated suffix states on randomized scenes.
+  fixed_scene: false
+  fixed_episode_id: 0
+
+model:
+  absolute_targets: true
+  hidden_dim: 256
+  recurrent_dim: 128
+  grip_decimation: 10  # choose open/close at 5 Hz; pose and force remain 50 Hz
+  # Scaling, NOT clipping: expert actions remain full waypoint residuals.
+  position_scale: 0.01
+  rotation_scale: 0.1
+  # Physical exploration: 1 cm translation, 0.03 rad rotation after scaling.
+  initial_std: [1.0, 1.0, 1.0, 0.3, 0.3, 0.3]
+  # Force is a learned Beta distribution mapped to [-1,1] -> 0–20 N/finger.
+  # It starts around 10 N; expert labels are a prior, not an execution override.
+
+train:
+  updates: 2000
+  rollout_steps: 64
+  checkpoint_interval: 25
+
+ppo:
+  # Labels come from the training expert on learner-visited states; no expert at inference.
+  online_expert_weight: 0.3
+  online_expert_epochs: 4
+  online_expert_lr: 0.0003
+  lr: 0.0003
+  min_lr: 0.00001
+  gamma: 0.998
+  gae_lambda: 0.95
+  epochs: 4
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.001
+  max_grad_norm: 1.0
+  target_kl: 0.02
+  sequence_length: 32
+  num_mini_batches: 8
+
+expert:
+  # Pass --dataset explicitly; --bc-weight 0 permits a PPO-only comparison.
+  batch_size: 4
+  val_fraction: 0.1
+  num_workers: 0
+  bc_weight: 0.0
+  bc_final_weight: 0.0
+  bc_decay_updates: 800
+
+curriculum:
+  # release -> lower -> transport -> lift -> grasp -> descend -> approach
+  # -> clearance -> full. This controls training starts, never policy inputs.
+  start_level: 0
+  start_progress_index: 0
+  # Fraction of the current expert motion completed before policy handoff.
+  # Each fraction must pass frozen validation before moving to the next one.
+  handoff_fractions: [0.98, 0.95, 0.9, 0.85, 0.7, 0.5, 0.25, 0.0]
+  retention_fraction: 0.15
+  window: 256
+  promotion_rate: 0.8
+  evaluation_interval: 25
+  evaluation_episodes: 64
+  final_seeds: [43, 44]
+  final_success_rate: 0.9
+
+reward:
+  # Progress shaping + per-second physical-state reward; same success criterion.
+  dense_scale: 0.25
+  reach: 2.0
+  alignment: 1.0
+  lift: 4.0
+  transport: 4.0
+  place: 4.0
+  retreat: 2.0
+  lift_bonus: 2.0
+  success_bonus: 100.0
+  failure_penalty: 2.0
+  time_cost: 0.05

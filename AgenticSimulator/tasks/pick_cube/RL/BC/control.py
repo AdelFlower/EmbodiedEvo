@@ -13,7 +13,9 @@ from isaaclab.utils.math import (
 )
 
 from .expert import BatchExpert
-from .schema import ACTION_DIM, INITIAL_PREVIOUS_ACTION, normalize_grip_force
+from .schema import (
+    ACTION_DIM, INITIAL_PREVIOUS_ACTION, grip_force_to_newtons, normalize_grip_force,
+)
 
 
 def canonical_quaternion(quaternion):
@@ -29,7 +31,7 @@ def canonical_quaternion(quaternion):
 class BCExpertController(BatchExpert):
     """专家状态机只在 decide() 中推进，physics_step() 只跟踪锁存目标。
 
-    set_action()/physics_step() 也可接收 BC 动作；力度按任务约定固定 10 N/指。
+    专家示范使用 10 N/指；set_action()/physics_step() 执行策略给定的力度。
     保留原控制器的成功判据、阶段超时、IK 和关节目标限速。
     """
 
@@ -103,9 +105,6 @@ class BCExpertController(BatchExpert):
             raise ValueError("夹爪动作必须是 0/1")
         if (actions[:, 7].abs() > 1).any().item():
             raise ValueError("力度标签必须位于 [-1, 1]")
-        # 执行力度固定为 10 N，拒绝与实际执行不一致的闭合标签。
-        if ((actions[:, 6] == 1) & (actions[:, 7].abs() > 1e-6)).any().item():
-            raise ValueError("固定 10 N 时闭合力度标签必须为 0")
         root = self.robot.data.root_state_w[:, :7]
         hand = self.robot.data.body_state_w[:, self.hand_id, :7]
         position, quaternion = subtract_frame_transforms(
@@ -139,4 +138,4 @@ class BCExpertController(BatchExpert):
             physics_dt, self._held_position, self._held_quaternion,
             self._tracking & active,
         )
-        self._send()
+        self._send(grip_force=grip_force_to_newtons(self.previous_action[:, 7]))

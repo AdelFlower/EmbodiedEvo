@@ -123,13 +123,7 @@ def load_policy(checkpoint_path, device):
         raise ValueError("checkpoint schema_version 与当前观测/动作协议不一致")
     if checkpoint.get("obs_dim") != OBS_DIM or checkpoint.get("action_dim") != ACTION_DIM:
         raise ValueError("checkpoint 的观测/动作维度不一致")
-    if checkpoint.get("model_type") != "gru":
-        raise ValueError("评估入口需要 model_type='gru' 的新 checkpoint；旧 MLP 权重不能用于 GRU")
-    model_config = checkpoint["model_config"]
-    for key in ("hidden_dim", "recurrent_dim"):
-        if type(model_config.get(key)) is not int or model_config[key] <= 0:
-            raise ValueError(f"checkpoint model_config.{key} 必须为正整数")
-    policy = GRUBCPolicy(**model_config)
+    policy = GRUBCPolicy(**checkpoint["model_config"])
     policy.load_state_dict(checkpoint["model_state_dict"], strict=True)
     if not all(torch.isfinite(value).all().item() for value in policy.state_dict().values()):
         raise ValueError("checkpoint 权重包含 NaN/Inf")
@@ -153,8 +147,8 @@ def load_policy(checkpoint_path, device):
     return policy.to(device).eval(), mean.to(device), std.to(device), metadata
 
 
-def fixed_force_action(predicted):
-    """固定每指 10 N；previous_action 必须记录实际执行的 0/-1 力度标签。"""
+def executable_action(predicted):
+    """保留策略的闭合力度；打开时不施加闭合力，记录约定的 -1 标签。"""
     import torch
 
     if predicted.shape != (1, ACTION_DIM) or not torch.isfinite(predicted).all().item():
@@ -162,7 +156,9 @@ def fixed_force_action(predicted):
     if not ((predicted[:, 6] == 0) | (predicted[:, 6] == 1)).all().item():
         raise ValueError("predict() 的夹爪输出必须是 0/1")
     action = predicted.clone()
-    action[:, GRIP_FORCE_INDEX] = torch.where(action[:, 6] == GRIP_CLOSE, 0.0, -1.0)
+    action[:, GRIP_FORCE_INDEX] = torch.where(
+        action[:, 6] == GRIP_CLOSE, action[:, GRIP_FORCE_INDEX], -1.0,
+    )
     return action
 
 
@@ -303,7 +299,7 @@ def evaluate(args, config, policy, mean, std, report, trace):
     hidden = None
     report.update(status="running", success=None, reason="running")
     write_json(args.run_dir / "result.json", report)
-    print("[eval] 模型闭环开始：50 Hz 动作、200 Hz 物理、固定每指 10 N", flush=True)
+    print("[eval] 模型闭环开始：50 Hz 动作、200 Hz 物理、策略控制每指 0–20 N", flush=True)
     while physics_steps < max_steps:
         if not args.app.is_running():
             raise KeyboardInterrupt("评估期间关闭窗口")
@@ -312,7 +308,7 @@ def evaluate(args, config, policy, mean, std, report, trace):
             predicted, hidden = policy.predict((observation - mean) / std, hidden)
             if not torch.isfinite(hidden).all().item():
                 raise ValueError("GRU 隐藏状态包含 NaN/Inf")
-        action = fixed_force_action(predicted)
+        action = executable_action(predicted)
         trace.append(observation[0].cpu().numpy(), predicted[0].cpu().numpy(),
                      action[0].cpu().numpy(), physics_steps / PHYSICS_HZ)
         executor.set_action(action)
@@ -381,7 +377,7 @@ def main():
     settings = {key: str(value) if isinstance(value, Path) else value
                 for key, value in vars(args).items()}
     settings.update(physics_hz=PHYSICS_HZ, control_hz=CONTROL_HZ,
-                    grip_force_per_finger_n=10.0,
+                    grip_force_control="policy", grip_force_range_per_finger_n=[0.0, 20.0],
                     termination="observed_lift_release_then_native_placement_geometry",
                     rollout_time_limit_seconds=args.max_seconds)
     write_json(args.run_dir / "config.json", settings)

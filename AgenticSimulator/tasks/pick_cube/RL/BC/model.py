@@ -10,6 +10,7 @@ from .schema import (
     GRIP_FORCE_INDEX,
     GRIP_OPEN,
     OBS_DIM,
+    OBS_SLICES,
 )
 
 
@@ -98,6 +99,7 @@ class GRUBCPolicy(nn.Module):
         recurrent_dim=128,
         position_scale=0.01,
         rotation_scale=0.1,
+        use_previous_action=True,
     ):
         super().__init__()
         if min(position_scale, rotation_scale) <= 0:
@@ -111,8 +113,11 @@ class GRUBCPolicy(nn.Module):
             ),
         )
 
+        # 数据协议仍为 48 维；训练可仅使用前 40 维物理观测，避免依赖
+        # previous_action 中的专家动作。默认值兼容已有 checkpoint 配置。
+        self.input_dim = OBS_DIM if use_previous_action else OBS_SLICES["previous_action"].start
         self.encoder = nn.Sequential(
-            nn.Linear(OBS_DIM, hidden_dim),
+            nn.Linear(self.input_dim, hidden_dim),
             nn.ReLU(),
         )
         self.gru = nn.GRU(
@@ -142,7 +147,7 @@ class GRUBCPolicy(nn.Module):
         if single_step:
             observations = observations.unsqueeze(1)
 
-        features = self.encoder(observations)
+        features = self.encoder(observations[..., :self.input_dim])
         features, next_hidden = self.gru(features, hidden)
         predictions = self.action_head(features)
 

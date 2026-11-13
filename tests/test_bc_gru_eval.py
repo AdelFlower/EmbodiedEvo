@@ -21,6 +21,13 @@ if HAS_DEPS:
 
 @unittest.skipUnless(HAS_DEPS, "GRU eval tests require torch and pyyaml")
 class BCGRUEvalTests(unittest.TestCase):
+    def test_execution_preserves_predicted_closed_force(self):
+        predicted = torch.zeros(1, 8)
+        predicted[0, 6:] = torch.tensor([1., 0.5])
+        torch.testing.assert_close(eval_bc.executable_action(predicted), predicted)
+        predicted[0, 6] = 0
+        self.assertEqual(eval_bc.executable_action(predicted)[0, 7].item(), -1)
+
     def checkpoint(self):
         config = dict(hidden_dim=8, recurrent_dim=7, position_scale=0.02, rotation_scale=0.3)
         policy = GRUBCPolicy(**config)
@@ -56,14 +63,9 @@ class BCGRUEvalTests(unittest.TestCase):
             first, _ = policy.predict(obs[:, 0], None)
             torch.testing.assert_close(first, sequence[:, 0])
 
-    def test_rejects_legacy_checkpoint_and_corrupt_weights(self):
+    def test_rejects_corrupt_weights(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "best.pt"
-            payload = self.checkpoint()
-            del payload["model_type"]
-            torch.save(payload, path)
-            with self.assertRaisesRegex(ValueError, "旧 MLP"):
-                eval_bc.load_policy(path, "cpu")
             payload = self.checkpoint()
             payload["model_state_dict"]["gru.weight_ih_l0"][0, 0] = float("nan")
             torch.save(payload, path)

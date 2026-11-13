@@ -354,7 +354,11 @@ class BatchExpert:
         hand.damping.copy_(damping)
         self._gripper_modes_dirty.zero_()
 
-    def _send(self):
+    def _send(self, grip_force=None):
+        # Expert decisions keep their configured force; policy execution may
+        # supply one commanded force per environment, held across physics steps.
+        if grip_force is None:
+            grip_force = self.grip_force
         gravity = (
             self.robot.root_physx_view
             .get_gravity_compensation_forces()
@@ -375,7 +379,7 @@ class BatchExpert:
         # 指定的是每根手指关节的驱动力，负方向闭合；非力控环境发零力，
         # 避免释放时残留闭合力。位置目标在零增益阶段不起驱动作用。
         finger_effort = torch.where(
-            self.finger_force_mode, -self.grip_force, 0.0
+            self.finger_force_mode, -grip_force, 0.0
         )
         self.robot.set_joint_effort_target(
             finger_effort[:, None].expand(-1, 2),

@@ -104,6 +104,7 @@ class BCGRUTrainingTests(unittest.TestCase):
             args = SimpleNamespace(
                 seed=42, device="cpu", dataset=data, batch_size=2, val_fraction=0.34,
                 num_workers=0, hidden_dim=8, recurrent_dim=7,
+                use_previous_action=False,
                 position_scale=0.02, rotation_scale=0.2, lr=0.001, epochs=2,
                 grip_loss_weight=1.0, force_loss_weight=1.0,
             )
