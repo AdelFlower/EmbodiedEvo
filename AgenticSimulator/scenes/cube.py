@@ -12,7 +12,7 @@ from AgenticSimulator.scene_api import SceneBundle
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
-CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "plate_cube.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "cube.yaml"
 TABLE_SIZE = (1.2, 0.8, 0.05)
 TABLE_POSITION = (0.0, 0.0, 0.725)
 TABLE_HEIGHT = TABLE_POSITION[2] + TABLE_SIZE[2] / 2
@@ -78,7 +78,7 @@ def object_pose_bounds(item):
 
 
 def robot_config(prim_path="/World/Robot"):
-    """Return the plate-cube scene's local Franka high-PD configuration."""
+    """Return the cube scene's local Franka high-PD configuration."""
     cfg = FRANKA_PANDA_HIGH_PD_CFG.copy()
     cfg.prim_path = prim_path
     cfg.spawn.usd_path = str(ASSETS / "robots" / "franka" / "Franka.usd")
@@ -164,9 +164,6 @@ def build_scene(config):
     cube = RigidObject(
         RigidObjectCfg(prim_path="/World/Cube", spawn=None)
     )
-    plate = RigidObject(
-        RigidObjectCfg(prim_path="/World/Plate", spawn=None)
-    )
 
     hold_target = None
 
@@ -180,7 +177,6 @@ def build_scene(config):
 
         robot.reset()
         cube.reset()
-        plate.reset()
 
         hold_target = robot.data.default_joint_pos.clone()
 
@@ -191,7 +187,6 @@ def build_scene(config):
         entities={
             "robot": robot,
             "cube": cube,
-            "plate": plate,
         },
         initialize=initialize,
         preview_step=preview_step,

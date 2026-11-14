@@ -8,13 +8,6 @@ def configure(env_cfg):
     cube.custom_material.static_friction = 0.8
     cube.custom_material.dynamic_friction = 0.8
 
-    # 同步内存中的场景描述，使记录与实际生成参数一致；不改原训练 YAML。
-    for item in env_cfg.scene_config["objects"]:
-        if item["name"] == "Cube":
-            item["physics"]["mass"] = cube.custom_mass
-            item["material"]["static_friction"] = cube.custom_material.static_friction
-            item["material"]["dynamic_friction"] = cube.custom_material.dynamic_friction
-
 
 def before_step(env, dt):
     """每个物理子步调用；初始版本无额外物理作用。"""

@@ -3,26 +3,18 @@
 由 session.py 调用 create_executor(cfg=..., run=...)。本模块只依赖标准库
 和 orchestrator 工具，不导入 Isaac Sim 或任务 adapter。
 
-cfg["experiment"] 指定 adapter（例如 tasks 内的模块:类）和 config JSON 路径。
-该 JSON 的最小结构如下；宿主路径相对于此 JSON 所在目录解析：
-    {
-      "gpus": [0], "per_gpu": 1,
-      "policies": {"default": {"checkpoint": "model.pt", "params_dir": "params"}},
-      "episodes": [{"seed": 42}],
-      "source": {"physics": "physics.py", "adapter_config": {}},
-      "target": {"physics": null, "adapter_config": {}},
-      "target_feedback": {
-        "fields": ["steps", "step_dt"],
-        "artifacts": ["videos.overview", "videos.wrist"]
-      }
-    }
-source.physics 相对于源候选目录，target.physics 是固定宿主文件，null 使用
-adapter 恢复的固定环境配置。可通过 gpu_lock_dir 指定共享 GPU 锁目录。
+cfg 来自 task.toml 经配置加载器解析后生成的运行快照。本模块直接使用
+cfg["experiment"] 中的 adapter、GPU、policy、回合、源/目标物理和反馈设置，
+不再读取第二份实验配置文件。
+cfg["config_dir"] 是原 task.toml 所在目录，由加载器自动记录。policy 文件、
+target.physics 和可选 gpu_lock_dir 等宿主路径以此为基准，不以运行快照目录
+或当前工作目录为基准。source.physics 则相对于本次源候选目录。
+省略 target.physics 时使用 adapter 恢复的固定环境配置。
 默认用当前 session 进程的 sys.executable 启动仿真，因此应在具备 Isaac Sim
 依赖的 Python 环境中启动 session。仅需独立仿真解释器时才配置可选的 python
 路径；不依赖固定的机器目录、Conda 环境名称或 PATH 中的 python 命令。
 
-子进程接口（source.py / target.py 尚需按此约定实现）：
+子进程接口（source.py / target.py）：
     python -m AgenticSimulator.simulators.source|target --run-dir RUN --job JOB
 子进程先等待 stdin 的一行 start，再初始化模拟器及执行实验；EOF 表示取消。
 宿主创建进程成功后登记 on_start，再发送 start，创建进程失败不扣实验预算。
@@ -69,11 +61,9 @@ class ExperimentExecutor:
     def __init__(self, cfg: dict, run: Path):
         self.run = Path(run).resolve()
         self.workspace = self.run / "workspace"
-        experiment = cfg["experiment"]
-        self.adapter = experiment["adapter"]
-        config_path = Path(experiment["config"]).resolve()
-        self.base = config_path.parent
-        self.settings = json.loads(config_path.read_text(encoding="utf-8"))
+        self.settings = cfg["experiment"]
+        self.adapter = self.settings["adapter"]
+        self.base = Path(cfg["config_dir"]).resolve()
         python_path = self.settings.get("python")
         self.python = self._path(python_path) if python_path is not None else Path(sys.executable)
         self.candidates = CandidateStore(self.run / "candidates")

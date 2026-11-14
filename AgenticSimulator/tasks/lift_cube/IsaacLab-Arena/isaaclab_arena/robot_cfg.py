@@ -19,7 +19,7 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
 
 from isaaclab_arena.mdp import gripper_pos, ee_frame_pos, ee_frame_quat
-from AgenticSimulator.scenes.plate_cube import robot_config
+from AgenticSimulator.scenes.cube import robot_config
 
 
 @configclass
@@ -139,6 +139,6 @@ class FrankaRewardsCfg:
     )
 
 
-def plate_cube_robot_cfg() -> ArticulationCfg:
-    """Use the same local Franka asset, base pose and high-PD gains as plate_cube."""
+def cube_robot_cfg() -> ArticulationCfg:
+    """Use the same local Franka asset, base pose and high-PD gains as the cube scene."""
     return robot_config("{ENV_REGEX_NS}/Robot")

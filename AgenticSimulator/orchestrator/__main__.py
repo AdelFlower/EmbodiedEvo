@@ -3,7 +3,8 @@
 
 这是整个 orchestrator（调度模块）的命令行入口。
 运行 ``python -m AgenticSimulator.orchestrator`` 时，Python 会执行此文件。
-它把用户输入的参数交给配置加载器，再让 runner 负责完整的启动和收尾。
+--config 指向任务目录中的 task.toml，--run-dir 指定本次运行目录。
+配置加载器解析 TOML，再由 runner 保存 JSON 运行快照并负责启动和收尾。
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         "--config",
         type=Path,
         required=True,
-        help="框架 JSON 配置文件路径",
+        help="任务 TOML 配置文件路径（task.toml）",
     )
     parser.add_argument(
         "--run-dir",

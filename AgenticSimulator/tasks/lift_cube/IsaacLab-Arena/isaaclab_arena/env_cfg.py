@@ -20,16 +20,15 @@ from isaaclab.utils.configclass import configclass
 from isaaclab_arena import mdp
 from isaaclab_arena.robot_cfg import (
     FrankaEventCfg, FrankaJointPosActionsCfg, FrankaObservationsCfg,
-    FrankaRewardsCfg, FrankaSceneCfg, plate_cube_robot_cfg,
+    FrankaRewardsCfg, FrankaSceneCfg, cube_robot_cfg,
 )
 
-from AgenticSimulator.scenes.plate_cube import (
+from AgenticSimulator.scenes.cube import (
     TABLE_SIZE, TABLE_POSITION, TABLE_HEIGHT, ROBOT_POSITION,
     load_scene_config, object_spawn_config, object_pose_bounds,
 )
 
 SCENE_CONFIG = load_scene_config()
-SCENE_CONFIG["objects"] = [item for item in SCENE_CONFIG["objects"] if item["name"] == "Cube"]
 OBJECTS = {item["name"]: item for item in SCENE_CONFIG["objects"]}
 CUBE_BOUNDS, CUBE_ORIENTATION = object_pose_bounds(OBJECTS["Cube"])
 CUBE_POSITION = tuple((low + high) / 2 for low, high in CUBE_BOUNDS)
@@ -135,7 +134,6 @@ class TerminationsCfg:
 
 @configclass
 class LiftCubeEnvCfg(ManagerBasedRLEnvCfg):
-    scene_config = SCENE_CONFIG
     scene = LiftCubeSceneCfg(num_envs=1, env_spacing=30.0, replicate_physics=False)
     observations = ObservationsCfg()
     actions = FrankaJointPosActionsCfg()
@@ -151,5 +149,5 @@ class LiftCubeEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         self.sim.physx = PhysxCfg()
-        self.scene.robot = plate_cube_robot_cfg()
+        self.scene.robot = cube_robot_cfg()
         self.scene.ee_frame = FrankaSceneCfg().ee_frame

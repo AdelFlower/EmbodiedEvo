@@ -4,10 +4,10 @@
 RSL-RL 2.3.1，直接构建 `ManagerBasedRLEnv`，不依赖 Arena 通用框架。
 不需要升级 Isaac Sim，也不需要修改已安装的 Isaac Lab 源码。
 
-默认场景共用 `AgenticSimulator/scenes/plate_cube.py` 的资产构建函数，
-读取 `AgenticSimulator/scenes/configs/plate_cube.yaml`：使用本地高 PD Franka、
+默认场景共用 `AgenticSimulator/scenes/cube.py` 的资产构建函数，
+读取 `AgenticSimulator/scenes/configs/cube.yaml`：使用本地高 PD Franka、
 本地方块，以及相同的质量、重力、阻尼、摩擦、缩放和相机配置。
-PPO 只读取 YAML 中的 Cube 条目，不创建盘子；独立 `plate_cube.py` 场景仍保留盘子。
+独立场景预览与 PPO 任务均使用机器人和方块场景。
 桌面为 1.2 × 0.8 m，高 0.75 m；机器人底座位于 `(-0.45, 0, 0.75)`。
 方块在每个并行环境、每次重置时独立采样位置和 yaw。
 任务为抬方块到采样目标。
@@ -79,12 +79,12 @@ python AgenticSimulator/tasks/lift_cube/IsaacLab-Arena/play.py \
 | `isaaclab_arena/robot_cfg.py` | Franka 动作、重置与末端传感器 |
 | `isaaclab_arena/mdp.py` | 观测计算、任务奖励、成功检查与方块重置 |
 | `isaaclab_arena/ppo_cfg.py` | PPO 网络与超参数 |
-| `AgenticSimulator/scenes/plate_cube.py` | 场景与 PPO 共用的机器人、物体资产和物理配置构建 |
+| `AgenticSimulator/scenes/cube.py` | 场景与 PPO 共用的机器人、物体资产和物理配置构建 |
 
 ## 任务行为与本地适配
 
 保留关节位置动作（scale 0.5）、50 Hz 控制（仿真 dt 1/200、decimation 4）、
-5 秒回合。机器人使用 `plate_cube.py` 的高 PD 参数及默认关节姿态，
+5 秒回合。机器人使用 `cube.py` 的高 PD 参数及默认关节姿态，
 不再合成旧场景的机器人底座。训练时不添加额外的关节初始噪声。
 奖励权重仍为 reaching 1、lifting 15、goal tracking 16/5、动作/关节速度惩罚 -0.0001。
 

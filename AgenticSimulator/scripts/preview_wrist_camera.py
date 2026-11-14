@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument(
         "--checkpoint", type=Path,
-        default=package_root / "policies/lift_cube/model.pt",
+        default=package_root / "tasks/lift_cube/policy/model.pt",
     )
     parser.add_argument("--params-dir", type=Path, help="默认使用 checkpoint 同级的 params")
     parser.add_argument("--seed", type=int, default=42)

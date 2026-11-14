@@ -16,7 +16,7 @@ import traceback
 def load_config(path: Path) -> dict:
     """Read Isaac Lab YAML and resolve relative USD paths under project assets."""
     import yaml
-    from AgenticSimulator.scenes.plate_cube import ASSETS
+    from AgenticSimulator.scenes.cube import ASSETS
 
     class ConfigLoader(yaml.FullLoader):
         pass
@@ -98,14 +98,6 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint = args.checkpoint.resolve()
         env_cfg = LiftCubeEnvCfg()
         saved_env = load_config(checkpoint.parent / "params" / "env.yaml")
-        # The lift task excludes the plate, including checkpoints from the
-        # temporary plate-inclusive scene configuration.
-        saved_env["scene"].pop("plate", None)
-        saved_env["events"].pop("reset_plate", None)
-        if "scene_config" in saved_env:
-            saved_env["scene_config"]["objects"] = [
-                item for item in saved_env["scene_config"]["objects"] if item["name"] == "Cube"
-            ]
         if "usd_path" in saved_env["scene"]["table"]["spawn"]:
             from isaaclab.sim import UsdFileCfg
             env_cfg.scene.table.spawn = UsdFileCfg(usd_path=saved_env["scene"]["table"]["spawn"]["usd_path"])

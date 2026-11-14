@@ -47,7 +47,7 @@ SESSION_SHUTDOWN_TIMEOUT = 30.0
 
 
 def create_workspace(cfg: dict, run: Path) -> Path:
-    """从模板创建本次运行的工作区，再放入源实现。"""
+    """从模板创建工作区，将源候选与固定参考资料分开放置。"""
     template = Path(cfg["workspace_template"]).expanduser().resolve()
     source = Path(cfg["source_root"]).expanduser().resolve()
     workspace = run / "workspace"
@@ -64,6 +64,9 @@ def create_workspace(cfg: dict, run: Path) -> Path:
         workspace / "source",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"),
     )
+    # 将复制出的参考资料移到工作区顶层，随后单独只读挂载。
+    # 候选归档仍只读取 workspace/source，因此不会包含 reference。
+    (workspace / "source" / "reference").rename(workspace / "reference")
 
     # observations 放服务生成的反馈；scratch 供 Agent 写临时程序或中间文件。
     for name in ("observations", "scratch"):
@@ -91,6 +94,8 @@ def agent_command(
         preset,
         (
             "Read instruction.md and tools.md. "
+            "Source-environment reference files are read-only in reference/; "
+            "edit source/ to change physics. "
             "Use scripts/env.py to interact with the experiment service. "
             "Work autonomously toward the task described in instruction.md."
         ),
@@ -124,10 +129,10 @@ def agent_command(
     ]
 
     # source/ 和 scratch/ 可写。
-    # 指令、客户端和原始反馈由宿主管理。
+    # 指令、客户端、参考资料和原始反馈由宿主管理。
     # 在整体可写的 workspace 挂载上，再覆盖这些路径为只读。
     # 宿主仍可更新 observations，Agent 能读取更新后的内容。
-    for component in ("instruction.md", "tools.md", "scripts", "observations"):
+    for component in ("instruction.md", "tools.md", "scripts", "reference", "observations"):
         mounts += [
             "--mount",
             (

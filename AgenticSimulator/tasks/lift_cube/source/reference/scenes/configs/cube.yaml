@@ -1,0 +1,28 @@
+builder: AgenticSimulator.scenes.cube:build_scene
+
+camera:
+  eye: [0.0, -0.8, 1.8]
+  target: [0.0, 0.0, 0.75]
+
+objects:
+  - name: Cube
+    asset: cube/object.usdz
+    position_range:
+      x: [0.00, 0.30]
+      y: [-0.15, 0.15]
+      z: [0.78, 0.78] 
+
+    yaw_range_deg: [0.0, 360.0]
+
+    scale: [1.0, 1.0, 1.0]
+
+    physics:
+      mass: 0.35
+      gravity: true
+      linear_damping: 0.01
+      angular_damping: 0.05
+
+    material:
+      static_friction: 0.8
+      dynamic_friction: 0.8
+      restitution: 0.0

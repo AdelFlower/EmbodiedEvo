@@ -142,7 +142,7 @@ class ResourceMonitor:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="当前盘子/方块场景的单进程并行基准"
+        description="机器人与方块场景的单进程并行基准"
     )
     parser.add_argument("--scene-config", required=True)
     parser.add_argument("--run-dir", required=True)
@@ -171,8 +171,8 @@ def main():
     config = yaml.safe_load(config_text)
     objects = {item["name"]: item for item in config["objects"]}
 
-    if set(objects) != {"Cube", "Plate"}:
-        parser.error("这个基准要求 YAML 中恰好包含 Cube 和 Plate")
+    if set(objects) != {"Cube"}:
+        parser.error("这个基准要求 YAML 的 objects 中只包含 Cube")
 
     run_dir = Path(args.run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -424,14 +424,13 @@ def main():
             if not torch.isfinite(robot.data.joint_pos).all().item():
                 raise RuntimeError("机器人关节状态出现 NaN/Inf")
 
-            for name in ("cube", "plate"):
-                state = scene[name].data.root_state_w
-                if not torch.isfinite(state).all().item():
-                    raise RuntimeError(f"{name} 状态出现 NaN/Inf")
+            state = scene["cube"].data.root_state_w
+            if not torch.isfinite(state).all().item():
+                raise RuntimeError("cube 状态出现 NaN/Inf")
 
-                local_pos = state[:, :3] - scene.env_origins
-                if (local_pos[:, 2] < 0.6).any().item():
-                    raise RuntimeError(f"{name} 掉出了桌面范围")
+            local_pos = state[:, :3] - scene.env_origins
+            if (local_pos[:, 2] < 0.6).any().item():
+                raise RuntimeError("cube 掉出了桌面范围")
 
         def step_once():
             nonlocal step_index

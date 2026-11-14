@@ -65,14 +65,6 @@ class LiftCubeAdapter:
 
         env_cfg = LiftCubeEnvCfg()
         saved = load_config(self.params_dir / "env.yaml")
-        # 与现有 play.py 一致：lift_cube 不创建盘子。
-        saved["scene"].pop("plate", None)
-        saved["events"].pop("reset_plate", None)
-        if "scene_config" in saved:
-            saved["scene_config"]["objects"] = [
-                item for item in saved["scene_config"]["objects"]
-                if item["name"] == "Cube"
-            ]
         if "usd_path" in saved["scene"]["table"]["spawn"]:
             from isaaclab.sim import UsdFileCfg
 
