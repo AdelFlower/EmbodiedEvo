@@ -120,13 +120,28 @@ def lift_object_rl_success(
     return distance < position_tolerance
 
 
-def reset_cube(env: ManagerBasedRLEnv, env_ids: torch.Tensor) -> None:
-    """Restore cube pose and zero velocity at each episode reset."""
-    cube = env.scene["dex_cube"]
-    pose = torch.tensor((0.5, 0.0, 0.055, 1.0, 0.0, 0.0, 0.0), device=env.device).repeat(len(env_ids), 1)
+def reset_cube(
+    env: ManagerBasedRLEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("dex_cube"),
+    position_range: list | None = None,
+    yaw_range_deg: list | None = None,
+) -> None:
+    """Reset configured objects independently, preserving untouched environments."""
+    asset = env.scene[asset_cfg.name]
+    pose = asset.data.default_root_state[env_ids, :7].clone()
+    count = len(env_ids)
+    if position_range is not None:
+        bounds = torch.tensor(position_range, device=env.device)
+        pose[:, :3] = bounds[:, 0] + torch.rand(count, 3, device=env.device) * (bounds[:, 1] - bounds[:, 0])
     pose[:, :3] += env.scene.env_origins[env_ids]
-    cube.write_root_pose_to_sim(pose, env_ids=env_ids)
-    cube.write_root_velocity_to_sim(torch.zeros(len(env_ids), 6, device=env.device), env_ids=env_ids)
+    if yaw_range_deg is not None:
+        yaw = torch.deg2rad(torch.empty(count, device=env.device).uniform_(*yaw_range_deg))
+        pose[:, 3] = torch.cos(yaw / 2)
+        pose[:, 4:6] = 0.0
+        pose[:, 6] = torch.sin(yaw / 2)
+    asset.write_root_pose_to_sim(pose, env_ids=env_ids)
+    asset.write_root_velocity_to_sim(torch.zeros(count, 6, device=env.device), env_ids=env_ids)
 
 
 def generated_object_command(env: ManagerBasedRLEnv) -> torch.Tensor:

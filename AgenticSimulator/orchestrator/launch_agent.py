@@ -16,8 +16,12 @@ import os
 import shutil
 import subprocess
 import time
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python 3.10 使用 tomli 依赖。
 
 
 # 以下是容器内部看到的路径，与宿主机上真实的工作区和临时 HOME 不同。

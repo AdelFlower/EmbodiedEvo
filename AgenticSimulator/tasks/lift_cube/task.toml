@@ -1,0 +1,60 @@
+# 本任务的唯一人工配置；项目内路径相对于本文件，source.physics 除外。
+# Python 解释器默认沿用启动环境，不保存本机绝对路径。
+workspace_template = "../../Workspace"
+source_root = "source"
+
+[task]
+name = "lift_cube"
+description = "根据固定 policy 在目标环境中的表现，校准源仿真器的物理实现。"
+
+[agent]
+preset = "codex"
+# 模型、推理强度和镜像先沿用外层示例，可按实际部署修改。
+model = "gpt-6-astra"
+reasoning_effort = "xhigh"
+image = "embodiedevo-agent:latest"
+network = "agenticsimulator-agent"
+cpus = 4
+memory_mb = 8192
+
+[session]
+startup_timeout_sec = 120
+# 一次请求的总时限，包括准备、等待 GPU、请求中的各侧执行及反馈发布。
+execution_timeout_sec = 1200
+# 暂定每侧各 100 次；按子进程实际启动计数，启动后的失败也计入。
+# 删除某侧 budget 字段表示不限制次数，0 表示不允许启动该侧。
+source_budget = 100
+target_budget = 100
+# 不填写 timeout_sec 表示不设会话总时限；需要时填写正数，单位为秒。
+
+[experiment]
+adapter = "AgenticSimulator.tasks.lift_cube.adapter:LiftCubeAdapter"
+gpus = [0]
+per_gpu = 1
+
+[experiment.policies.default]
+checkpoint = "policy/model.pt"
+params_dir = "policy/params"
+
+# 数组下标即 episode_id；第一项是 episode_id = 0，两侧使用同一回合配置。
+[[experiment.episodes]]
+seed = 42
+
+[experiment.source]
+# 相对于 worker 为本次请求准备的源候选目录。
+physics = "physics.py"
+
+[experiment.source.adapter_config]
+record_video = true
+
+[experiment.target]
+# 固定宿主文件，不放入 Agent 的源候选目录。
+physics = "target/physics.py"
+
+[experiment.target.adapter_config]
+record_video = true
+
+[experiment.target_feedback]
+# 目标侧只公开这些字段及文件；源侧公开完整实验结果和诊断。
+fields = ["steps", "step_dt"]
+artifacts = ["videos.overview", "videos.wrist"]

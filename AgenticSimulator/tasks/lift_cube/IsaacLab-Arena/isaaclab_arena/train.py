@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         from isaaclab.utils.io import dump_yaml
         from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
         from isaaclab_tasks.utils.hydra import hydra_task_config
+        from isaaclab_arena.numerics import install_numerics_guard
 
         register_task()
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -89,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
                 runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=str(log_dir), device=agent_cfg.device)
                 if args.checkpoint is not None:
                     runner.load(str(args.checkpoint.expanduser().resolve()))
+                install_numerics_guard(runner, log_dir)
                 runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
                 (Path.cwd() / "training_complete.json").write_text(json.dumps({
                     "iterations": agent_cfg.max_iterations, "num_envs": env_cfg.scene.num_envs,

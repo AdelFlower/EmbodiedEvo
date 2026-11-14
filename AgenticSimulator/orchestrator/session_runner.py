@@ -42,6 +42,9 @@ IMPORT_ROOT = PACKAGE_ROOT.parent
 CONTAINER_SOCKET_DIR = "/run/agenticsimulator"
 CONTAINER_SOCKET = f"{CONTAINER_SOCKET_DIR}/session.sock"
 
+# Agent 提交 finish 并退出后，给实验服务单独的正常清理时间。
+SESSION_SHUTDOWN_TIMEOUT = 30.0
+
 
 def create_workspace(cfg: dict, run: Path) -> Path:
     """从模板创建本次运行的工作区，再放入源实现。"""
@@ -165,13 +168,13 @@ def stop_process(process: subprocess.Popen | None) -> None:
 
 
 def _session_finished(run: Path) -> bool:
-    """以宿主保存的终态为准，不依赖结束通知的到达顺序。"""
+    """检查已保存的正常结束状态；服务是否已清理退出须另查进程。"""
     path = run / "session-result.json"
     if not path.is_file():
         return False
     state = json.loads(path.read_text(encoding="utf-8"))
-    # 收到 finished 事件或看到进程退出都不够：必须有已关闭、Agent 主动结束、
-    # 且没有执行中请求的持久化终态，才确认实验服务已完成协议流程。
+    # finish 会在 executor.close() 前写入这个状态，因此它不能单独证明清理完成。
+    # 认定正常结束还须确认服务以退出码 0 退出。
     return (
         state.get("closed") is True
         and state.get("reason") == "agent_finished"
@@ -201,10 +204,11 @@ def supervise(
     ready = False
 
     # monotonic 是只向前走的计时器，不受系统时钟校准影响，适合计算超时。
-    # 三个截止时间分别限制服务启动、Agent 总运行和当前单次实验请求。
+    # 服务清理单独计时，避免 Agent 的总运行时限截断正常清理。
     startup_deadline = time.monotonic() + startup_timeout
     agent_deadline = None
     execution_deadline = None
+    shutdown_deadline = None
 
     while True:
         if pipe_open:
@@ -251,7 +255,7 @@ def supervise(
                         execution_deadline = None
 
                     elif kind == "finished":
-                        # 通知仅清除当前执行时限；最终完成仍需核对磁盘状态。
+                        # 服务已完成清理，但仍须等进程正常退出并核对磁盘状态。
                         execution_deadline = None
         else:
             time.sleep(0.2)
@@ -276,16 +280,24 @@ def supervise(
 
         if agent is not None and agent.poll() is not None:
             # Agent 退出并不代表已经提交的实验被取消。
-            # 若仍有 executing 时限，继续等待实验收尾；否则再判断正常结束或提前退出。
+            # 若仍有 executing 时限，继续等待实验收尾。
             if execution_deadline is None:
-                reason = (
-                    "session_finished"
-                    if agent.returncode == 0 and _session_finished(run)
-                    else "agent_exited"
-                )
-                return reason, agent
+                if not _session_finished(run):
+                    return "agent_exited", agent
 
-        if agent_deadline is not None and now >= agent_deadline:
+                # finish 已受理：等待 executor.close() 及服务进程正常结束，
+                # 不能仅凭 Agent 退出就进入 finally 向服务发送 SIGTERM。
+                if session_rc == 0:
+                    return (
+                        "session_finished" if agent.returncode == 0 else "agent_exited",
+                        agent,
+                    )
+                if shutdown_deadline is None:
+                    shutdown_deadline = now + SESSION_SHUTDOWN_TIMEOUT
+                if now >= shutdown_deadline:
+                    return "session_shutdown_timeout", agent
+
+        if shutdown_deadline is None and agent_deadline is not None and now >= agent_deadline:
             return "session_time_limit", agent
 
 
@@ -477,9 +489,10 @@ def run_session(cfg: dict, run_dir: str | Path) -> dict:
             result["session_returncode"] = (
                 session.poll() if session is not None else None
             )
-            # runner 的正常收尾可以终止服务进程，退出码仅保留作诊断。
-            # 服务若记录了实际错误，仍不能将本次会话报告为正常完成。
-            if result["reason"] == "session_finished" and not _session_finished(run):
+            # 正常完成必须同时满足服务正常退出和持久化终态；强制结束不算成功。
+            if result["reason"] == "session_finished" and (
+                result["session_returncode"] != 0 or not _session_finished(run)
+            ):
                 result["reason"] = "session_exited"
             result["finished_at"] = time.time()
 

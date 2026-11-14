@@ -14,30 +14,12 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg, OffsetCfg
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.configclass import configclass
-from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
 
 from isaaclab_arena.mdp import gripper_pos, ee_frame_pos, ee_frame_quat
-from isaaclab_arena.stand import RobotPrimSpec, StandPrimSpec, compose_on_stand_usd
-
-_FRANKA_ROBOT_PRIM = RobotPrimSpec(
-    robot_usd_path=FRANKA_PANDA_CFG.spawn.usd_path,
-    root_prim_path="/panda",
-    robot_base_prim_name="panda_link0",
-    stand_prim_name="stand_instanceable",
-)
-
-
-_FRANKA_STAND_PRIM = StandPrimSpec(
-    stand_usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/Stand/stand_instanceable.usd",
-    ref_prim_path="/Stand",
-    payload_child_name="Stand",
-    footprint_translate_xyz=(-0.05, 0.0, 0.0),
-    stand_default_footprint_xy_m=(0.3888, 0.3888),
-    stand_default_height=0.8755,
-)
+from AgenticSimulator.scenes.plate_cube import robot_config
 
 
 @configclass
@@ -54,7 +36,7 @@ class FrankaJointPosActionsCfg:
         use_default_offset=False,
         offset={
             name: value
-            for name, value in FRANKA_PANDA_CFG.init_state.joint_pos.items()
+            for name, value in FRANKA_PANDA_HIGH_PD_CFG.init_state.joint_pos.items()
             if name.startswith("panda_joint")
         },
     )
@@ -132,18 +114,6 @@ class FrankaObservationsCfg:
     policy: PolicyCfg = PolicyCfg()
 
 
-_FRANKA_READY_POSE = {
-    "panda_joint1": 0.0,
-    "panda_joint2": -0.785,
-    "panda_joint3": -0.1107,
-    "panda_joint4": -1.1775,
-    "panda_joint5": 0.0,
-    "panda_joint6": 0.785,
-    "panda_joint7": 0.785,
-    "panda_finger_joint.*": 0.0400,
-}
-
-
 @configclass
 class FrankaEventCfg:
     """Configuration for Franka."""
@@ -153,7 +123,7 @@ class FrankaEventCfg:
         mode="reset",
         params={
             "mean": 0.0,
-            "std": 0.02,
+            "std": 0.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -169,16 +139,6 @@ class FrankaRewardsCfg:
     )
 
 
-def _franka_robot_cfg_on_stand(robot_cfg: ArticulationCfg) -> ArticulationCfg:
-    """Copy ``robot_cfg`` onto ``{ENV_REGEX_NS}/Robot`` with the composed on-stand USD."""
-    cfg = robot_cfg.replace(prim_path="{ENV_REGEX_NS}/Robot")
-    # Arena reaches for objects on a table, so it spawns at its own ready pose rather than at the
-    # pose Isaac Lab ships, which folds the elbow back.
-    cfg.init_state = cfg.init_state.replace(joint_pos=_FRANKA_READY_POSE)
-    cfg.spawn.usd_path = compose_on_stand_usd(
-        _FRANKA_ROBOT_PRIM,
-        _FRANKA_STAND_PRIM,
-        stand_height_m=_FRANKA_STAND_PRIM.stand_default_height,
-        output_basename="franka_panda_on_stand",
-    )
-    return cfg
+def plate_cube_robot_cfg() -> ArticulationCfg:
+    """Use the same local Franka asset, base pose and high-PD gains as plate_cube."""
+    return robot_config("{ENV_REGEX_NS}/Robot")

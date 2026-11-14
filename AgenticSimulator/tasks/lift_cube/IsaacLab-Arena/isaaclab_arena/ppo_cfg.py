@@ -19,9 +19,13 @@ class RLPolicyCfg(RslRlOnPolicyRunnerCfg):
     max_iterations: int = 4000
     save_interval: int = 200
     experiment_name: str = "generic_experiment"
-    empirical_normalization: bool = False
+    empirical_normalization: bool = True
+    # With scale=0.5 this still covers the entire native Franka joint range.
+    # Bound last_action feedback and its squared action-rate penalty.
+    clip_actions: float = 10.0
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
+        noise_std_type="log",
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -33,8 +37,8 @@ class RLPolicyCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.006,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=0.0001,
-        schedule="adaptive",
+        learning_rate=0.0003,
+        schedule="fixed",
         gamma=0.98,
         lam=0.95,
         desired_kl=0.01,

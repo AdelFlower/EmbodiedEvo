@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=False)
     source_root = Path(__file__).resolve().parent
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(source_root) + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join((str(source_root), str(source_root.parents[3]), env.get("PYTHONPATH", "")))
     command = [
         sys.executable, "-u", "-m", "isaaclab_arena.train",
         *trainer_args,

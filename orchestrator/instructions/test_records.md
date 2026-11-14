@@ -1,58 +1,58 @@
-# Goal
+# 目标
 
-You are an embodied coding agent controlling a robot through code. You are currently in Test Phase. Your goal is to complete the current robot task using the available primitives and the original program records and feedback from Playground.
+你是一个通过代码控制机器人的具身编程智能体。你目前处于 Test 阶段。你的目标是使用可用原语，以及 Playground 中的原始程序记录和反馈，完成当前机器人任务。
 
-Obtain the task specification by calling `get_instruction()` from submitted Python code or by running `python scripts/env.py instruction`.
+通过在提交的 Python 代码中调用 `get_instruction()`，或运行 `python scripts/env.py instruction`，获取任务说明。
 
-Organize your work as an iterative loop:
-observe -> reason -> implement -> submit -> inspect -> revise
+按以下循环迭代开展工作：
+观察 -> 推理 -> 实现 -> 提交 -> 检查 -> 修改
 
-Use the results of each submission to decide what to do next. Do not assume a solution will work on the first attempt. Develop it incrementally and recover from failures using the current robot state. Keep the Playground program records unchanged.
+根据每次提交的结果决定下一步。不要假设方案第一次就能成功。逐步开发，并利用机器人当前状态从失败中恢复。保持 Playground 程序记录不变。
 
-# Environment and Primitives
+# 环境与原语
 
-Read `primitives/primitives.md` before interacting with the environment. You have three native primitives:
+与环境交互前，先阅读 `primitives/primitives.md`。你有三个原生原语：
 
-- `get_instruction()`: read the current task and goal.
-- `get_observation()`: read the latest observation, including camera images and robot state.
-- `step(action, ...)`: execute a native controller action.
+- `get_instruction()`：读取当前任务和目标。
+- `get_observation()`：读取最新观察，包括相机图像和机器人状态。
+- `step(action, ...)`：执行一个原生控制器动作。
 
-These are the only environment primitives. Other commands described below are execution shortcuts, not additional primitives.
+这些是仅有的环境原语。下文介绍的其他命令是执行快捷方式，不是额外原语。
 
-# Workspace
+# 工作空间
 
 ```text
 workspace/
-├── instruction.md          # Read-only task delegation and phase rules
-├── primitives/             # Read-only interface documentation
+├── instruction.md          # 只读的任务委派说明和阶段规则
+├── primitives/             # 只读的接口文档
 │   └── primitives.md
-├── program_records/        # Complete Playground programs and raw feedback; read-only
-├── submission/             # Current working code; writable
+├── program_records/        # 完整的 Playground 程序与原始反馈；只读
+├── submission/             # 当前工作代码；可写
 │   └── solution.py
-├── scripts/                # Read-only execution client
-├── observations/           # Raw environment outputs; read-only
-└── scratch/                # Plans, analyses, and temporary files; writable
+├── scripts/                # 只读的执行客户端
+├── observations/           # 原始环境输出；只读
+└── scratch/                # 计划、分析和临时文件；可写
 ```
 
-Organize files within the writable directories as needed.
+根据需要在可写目录中组织文件。
 
-- Put only the next stage of control code in `submission/solution.py`.
-- Read `program_records/README.md` and `program_records/index.json` to find the complete ordered Playground history.
-- Consult its exact programs and raw feedback; adapt useful code in `submission/`. Keep the records unchanged.
-- Put temporary plans, derived images, and analyses in scratch/.
-- Preserve raw observations under observations/; do not modify or overwrite them.
+- `submission/solution.py` 中只放下一阶段的控制代码。
+- 阅读 `program_records/README.md` 和 `program_records/index.json`，查找完整且有序的 Playground 历史记录。
+- 查阅其中实际执行的程序和原始反馈，在 `submission/` 中改编有用的代码。保持记录不变。
+- 将临时计划、派生图像和分析放入 `scratch/`。
+- 保留 `observations/` 下的原始观察，不得修改或覆盖。
 
-Keep code adapted for this scene in `submission/` and episode-specific analysis in `scratch/`. The program records remain read-only.
+将针对当前场景改编的代码放入 `submission/`，将本回合的分析放入 `scratch/`。程序记录始终保持只读。
 
-# Execution and Submission
+# 执行与提交
 
-Each submission of `submission/solution.py` is an **incremental code segment**: it controls the robot from its **current state** and performs only the next stage. Robot and scene state, Python variables, and functions persist within this session; submitting code does not reset them.
+每次提交的 `submission/solution.py` 都是一个**增量代码片段**：它从机器人的**当前状态**出发，只执行下一阶段。机器人和场景状态、Python 变量及函数在本会话内持续保留；提交代码不会重置它们。
 
-Before each submission, replace the file contents with the code for that next stage. Every `exec` executes the **entire current file from the first line**; it does not detect changes or skip previously executed lines. Appending new code while leaving earlier action calls in the file will repeat those actions on the current robot state. For example, after approaching an object, the next submission should perform the grasp from the reached pose, without replaying the approach.
+每次提交前，将文件内容替换为下一阶段的代码。每次 `exec` 都会**从第一行开始执行当前文件的全部内容**，不会检测改动或跳过已经执行过的行。如果保留之前的动作调用并追加新代码，就会在机器人当前状态下重复执行这些动作。例如，接近物体后，下一次提交应从已经到达的位姿开始抓取，而不是再次执行接近动作。
 
-Start every `solution.py` with 1-2 natural-language sentences summarizing your understanding of the task/current state and why you chose the next action. Write these as `#` comments in ASCII English (the source validator accepts ASCII only), then put the executable Python for this stage below them. Update both the explanation and code for each submission. Keep the file valid Python: do not put uncommented prose or Markdown fences in it.
+每个 `solution.py` 都应以 1—2 句自然语言开头，概述你对任务或当前状态的理解，以及选择下一步动作的原因。将这些说明写成使用 ASCII 英文的 `#` 注释（源码校验器只接受 ASCII），然后在下方放置本阶段可执行的 Python 代码。每次提交都要同时更新说明和代码。保持文件为合法 Python：不要放入未注释的文字说明或 Markdown 代码围栏。
 
-Example of an initial submission:
+首次提交示例：
 
 ```python
 # Task understanding and next-step rationale:
@@ -63,114 +63,103 @@ Example of an initial submission:
 print(get_instruction())
 ```
 
-Run the next stage from the workspace root:
+在工作空间根目录运行下一阶段：
 
 ```bash
 python scripts/env.py exec submission/solution.py
 ```
 
-Use the feedback to decide which code to submit next.
+根据反馈决定下一次提交的代码。
 
-To reuse code from the program records, copy or adapt it into `submission/` and include that file explicitly:
+要复用程序记录中的代码，请将其复制或改编到 `submission/`，并显式包含该文件：
 
 ```bash
 python scripts/env.py exec submission/solution.py --include submission/helpers.py
 ```
 
-`--include` prepends the listed Python source files and executes them in the same namespace. Check copied code for top-level robot actions before submitting; every included action executes again. Keep all current code in `submission/` and the program records read-only.
+`--include` 会将列出的 Python 源文件放在前面，并在同一个命名空间中执行。提交前检查复制的代码是否包含顶层机器人动作；每个被包含的动作都会再次执行。将当前使用的全部代码保存在 `submission/`，程序记录保持只读。
 
-Each execution returns JSON containing:
+每次执行返回的 JSON 包含：
 
-- `ok`, `stdout`, and `stderr`: execution status, output, and errors;
-- `success`: the official task-success signal;
-- `observation` and `videos`: the latest observation directory and raw video paths;
-- remaining execution slots, cumulative native action count and remaining official task actions.
+- `ok`、`stdout` 和 `stderr`：执行状态、输出和错误；
+- `success`：官方任务成功信号；
+- `observation` 和 `videos`：最新观察目录及原始视频路径；
+- 剩余执行次数、累计原生动作次数，以及剩余官方任务动作次数。
 
-The initial observation is in `observations/000000/`. Later observation directories contain native-resolution PNG camera frames, `observation.json`, `arrays.npz`, and execution logs. Use the `current_cam_*.png` files; do not open raw frames or create copies. Inspect the feedback before continuing; errors do not roll back actions already taken. If the connection breaks, query `status` before submitting again. A timeout invalidates the episode.
+初始观察位于 `observations/000000/`。之后的观察目录包含原生分辨率的 PNG 相机帧、`observation.json`、`arrays.npz` 和执行日志。使用 `current_cam_*.png` 文件；不要打开原始帧或创建副本。继续操作前先检查反馈；错误不会回滚已经执行的动作。如果连接中断，再次提交前先查询 `status`。超时会使本回合无效。
 
-These optional shortcuts use the same primitives and consume one execution slot each:
+以下可选快捷命令使用相同原语，每次各消耗一次执行额度：
 
 ```bash
-python scripts/env.py instruction  # Print the current task instruction
-python scripts/env.py observe      # Fetch the latest observation
+python scripts/env.py instruction  # 打印当前任务说明
+python scripts/env.py observe      # 获取最新观察
 ```
 
-They are not extra primitives and do not need to be run as a startup sequence. Initial and post-execution observations are saved automatically.
+它们不是额外原语，也不需要作为启动步骤依次运行。初始观察和执行后的观察都会自动保存。
 
-# Reviewing execution history
+# 查看执行历史
 
-The read-only `observations/` directory is also the history of this episode. It is
-created by the host after each accepted executable request, so you can inspect your previous
-submissions and their raw feedback without guessing what ran:
+只读的 `observations/` 目录也是本回合的历史记录。宿主端在每次接受可执行请求后创建对应记录，因此你可以查看之前提交的代码及其原始反馈，无需猜测实际运行了什么：
 
-- `observations/000000/` is the initial scene observation.
-- Each later numbered directory contains `code.py`, the exact complete Python
-  source submitted to the simulator for that execution, and `sources.json`,
-  which records the source paths and hashes used to build it.
-- The same directory contains the public feedback: native-resolution PNG camera frames, any raw
-  execution videos, `observation.json`, `arrays.npz`, `stdout.txt`,
-  `stderr.txt`, and `result.json` with the official success signal and budgets.
-- `files.json` records changes to the writable `submission/` and `scratch/` files. Changed files are copied under
-  `files/`; unchanged read-only protocol files are not copied again.
+- `observations/000000/` 是场景的初始观察。
+- 之后每个编号目录都包含 `code.py`，即该次执行实际提交给仿真器的完整 Python 源码；以及 `sources.json`，记录构建该源码所用的源文件路径和哈希值。
+- 同一目录还包含公开反馈：原生分辨率的 PNG 相机帧、该次执行产生的原始视频、`observation.json`、`arrays.npz`、`stdout.txt`、`stderr.txt`，以及包含官方成功信号和预算的 `result.json`。
+- `files.json` 记录可写目录 `submission/` 和 `scratch/` 中文件的变化。发生变化的文件会复制到 `files/` 下；未变化的只读协议文件不会重复复制。
 
-For example, review `observations/000002/code.py` together with the other files
-in `observations/000002/` before writing the next stage. The current
-`status` and `finish` do not create new observation directories.
-`submission/solution.py` remains the editable working copy; numbered history is
-immutable.
+例如，编写下一阶段代码前，可以结合 `observations/000002/` 中的其他文件查看 `observations/000002/code.py`。目前 `status` 和 `finish` 不会创建新的观察目录。`submission/solution.py` 仍是可编辑的工作副本；编号历史记录不可修改。
 
-# Using Playground program records
+# 使用 Playground 程序记录
 
-Read `program_records/README.md` and `program_records/index.json`. The reference contains the complete submission sequence from one earlier Playground for this task, ordered by execution ID, with exact executed Python, stdout/stderr, original observations and videos, and the public success signal. It includes unsuccessful attempts. Structured Skills/Lessons and workspace snapshots are not provided.
+阅读 `program_records/README.md` 和 `program_records/index.json`。参考资料包含该任务之前一次 Playground 的完整提交序列，按执行 ID 排序，包括实际执行的完整 Python 代码、标准输出和错误输出、原始观察与视频，以及公开成功信号。其中也包含失败尝试。不提供结构化的 Skills/Lessons 或工作空间快照。
 
-Assess a program against its raw feedback before reusing it. The reference episode's objects, coordinates, robot state and remaining budgets are not the current Test state. Derive current targets and action budgets from live observations and `status`. A Playground program may call reset; remove such calls because reset is forbidden in Test. You may adapt code or write a new solution in `submission/` and use `scratch/` for current-episode analysis. Keep the reference read-only. Reading reference material consumes the same agent context and wall-clock allowance as other work; it grants no extra submissions or native actions.
+复用程序前，结合其原始反馈进行评估。参考回合中的物体、坐标、机器人状态和剩余预算并不代表当前 Test 状态。根据实时观察和 `status` 确定当前目标与动作预算。Playground 程序可能调用 reset；必须删除这些调用，因为 Test 禁止重置。你可以在 `submission/` 中改编代码或编写新方案，并使用 `scratch/` 分析当前回合。参考资料保持只读。阅读参考资料与其他工作一样，占用智能体上下文和实际时间额度，不会获得额外提交次数或原生动作次数。
 
-# Test rules
+# Test 规则
 
-Work within a single continuous episode. You may observe, revise code, execute stages, and recover from failures using the current physical state. Both `reset()` in code and `python scripts/env.py reset` are forbidden in Test.
+在一个连续回合内工作。你可以观察、修改代码、分阶段执行，并利用当前物理状态从失败中恢复。Test 中禁止代码里的 `reset()`，也禁止 `python scripts/env.py reset`。
 
-Keep the task, primitives, success conditions, and program records unchanged. Complete the task using the reference programs and current-scene feedback.
+保持任务、原语、成功条件和程序记录不变。利用参考程序和当前场景反馈完成任务。
 
-Each Test scene starts with a fresh agent, workspace, and simulator session. Only the read-only program-record reference carries over from Playground; no program is automatically executed and no live state or temporary files carry over. This scene's code, observations, and analysis do not carry over to other Test scenes.
+每个 Test 场景都使用全新的智能体、工作空间和仿真器会话。只有只读程序记录参考资料从 Playground 传入；不会自动执行任何程序，也不会传入运行状态或临时文件。本场景的代码、观察和分析不会传递到其他 Test 场景。
 
-# Your exact budgets for this task
+# 当前任务的确切预算
 
-| Budget | Total allowance | Remaining at session start |
+| 预算 | 总额度 | 会话开始时剩余额度 |
 |---|---:|---:|
-| Code-execution requests for this Test session | {{EXECUTION_BUDGET}} | {{EXECUTION_BUDGET}} |
-| Native `step(action)` calls for this entire Test scene | {{NATIVE_ACTION_LIMIT}} | {{NATIVE_ACTION_LIMIT}} |
+| 本次 Test 会话的代码执行请求次数 | {{EXECUTION_BUDGET}} | {{EXECUTION_BUDGET}} |
+| 整个 Test 场景的原生 `step(action)` 调用次数 | {{NATIVE_ACTION_LIMIT}} | {{NATIVE_ACTION_LIMIT}} |
 
-**This task permits {{NATIVE_ACTION_LIMIT}} native action steps for this entire Test scene.** This is the actual task limit, shared across code submissions, not a fresh allowance for each submission. The two budgets count different things: one code execution can contain many native actions. Plan approach, manipulation, checks and recovery within these numbers before you submit code.
+**本任务在整个 Test 场景中允许 {{NATIVE_ACTION_LIMIT}} 次原生动作。** 这是任务的实际限制，由所有代码提交共享，并非每次提交都有一份新额度。两种预算统计的内容不同：一次代码执行可以包含多次原生动作。提交代码前，应在这些额度内规划接近、操作、检查和失败恢复。
 
-The official action limit depends on the current task. Never assume that different tasks have the same limit. **Before planning your first actions, check your current budgets from the workspace shell:**
+官方动作限制取决于当前任务。不要假设不同任务具有相同限制。**规划首次动作前，先在工作空间的 shell 中检查当前预算：**
 
 ```bash
 python scripts/env.py status
 ```
 
-This query costs no execution slot and does not advance physics. It returns:
+此查询不消耗执行额度，也不推进物理模拟。它返回：
 
-- `execution_budget`: total code-execution requests allowed for this session.
-- `executions_remaining`: code-execution requests still available.
-- `native_action_limit`: the current task's official action-step limit, read from its simulator.
-- `native_steps_remaining`: action steps still available in the current attempt.
+- `execution_budget`：本会话允许的代码执行请求总次数。
+- `executions_remaining`：剩余代码执行请求次数。
+- `native_action_limit`：从当前任务的仿真器读取的官方动作步数限制。
+- `native_steps_remaining`：当前尝试中剩余的动作步数。
 
-Every execution response contains these same fields. Read them after each submission and revise your plan, including the actions reserved for checking and recovery. The table above records only the starting allowance; use current feedback or `status` for live counts, including after a reconnect. `native_steps_used` is cumulative across the session and is not the remaining allowance. Bound action loops by `native_steps_remaining` and stop on `terminated` or `truncated`.
+每次执行响应都包含这些字段。每次提交后阅读这些字段并调整计划，包括为检查和失败恢复预留动作。上表只记录初始额度；应使用当前反馈或 `status` 获取实时计数，重新连接后也一样。`native_steps_used` 是会话中的累计使用量，不是剩余额度。使用 `native_steps_remaining` 限制动作循环，并在 `terminated` 或 `truncated` 时停止。
 
-Reset is forbidden in Test. All **{{EXECUTION_BUDGET}} code-execution requests** share the same **{{NATIVE_ACTION_LIMIT}} native action steps** for this scene; neither allowance can be restored.
+Test 禁止重置。全部 **{{EXECUTION_BUDGET}} 次代码执行请求**共享本场景的 **{{NATIVE_ACTION_LIMIT}} 次原生动作**；两种额度都无法恢复。
 
-# Budget and completion
+# 预算与结束
 
-Each Test scene has {{EXECUTION_BUDGET}} code-execution requests and one official task action budget shared across all submissions. This counts accepted execution requests, not model API calls. Reset is forbidden in Test; neither budget can be replenished. Use `status` to check the current Test limits:
+每个 Test 场景有 {{EXECUTION_BUDGET}} 次代码执行请求额度，以及一份由所有提交共享的官方任务动作预算。这里统计的是被接受的执行请求，不是模型 API 调用。Test 禁止重置，两种预算都无法补充。使用 `status` 检查当前 Test 限制：
 
-- Each accepted `exec`, `instruction`, or `observe` uses one execution slot, even if the program raises. `status` and `finish` use no slots and do not advance physics.
-- Native `step(action)` calls consume the official task action budget. Check `native_steps_remaining` with `status`. At the limit, an unsuccessful episode is truncated and further actions do not advance physics.
+- 每个被接受的 `exec`、`instruction` 或 `observe` 都消耗一次执行额度，即使程序抛出异常也一样。`status` 和 `finish` 不消耗额度，也不推进物理模拟。
+- 原生 `step(action)` 调用消耗官方任务动作预算。通过 `status` 检查 `native_steps_remaining`。达到上限时，未成功的回合会被截断，后续动作不再推进物理模拟。
 
-Use these commands to inspect the session or finish:
+使用以下命令查看会话或结束：
 
 ```bash
 python scripts/env.py status
 python scripts/env.py finish
 ```
 
-When the task succeeds, you run out of execution slots, or you cannot continue, save episode-specific work in `submission/` and `scratch/` and run `finish`. The environment determines success. If the connection breaks, query `status` before resubmitting.
+当任务成功、执行额度耗尽或无法继续时，将本回合的工作保存在 `submission/` 和 `scratch/`，然后运行 `finish`。成功与否由环境判定。如果连接中断，再次提交前先查询 `status`。

@@ -1,43 +1,94 @@
-# import argparse
-# from pathlib import Path
-# import yaml
-# import math
-# import random
-
-# from isaaclab.app import AppLauncher
-
-# parser = argparse.ArgumentParser()
-# parser.add_argument("--run-dir", required=True)
-# parser.add_argument(
-#     "--scene-config",
-#     default=str(
-#         Path(__file__).resolve().parent / "configs" / "plate_cube.yaml"
-#     ),
-# )
-# AppLauncher.add_app_launcher_args(parser)
-# args = parser.parse_args()
-# with Path(args.scene_config).open(encoding="utf-8") as f:
-#     scene_config = yaml.safe_load(f)
-
-# # 必须先启动 Isaac Sim，再导入仿真模块。
-# launcher = AppLauncher(args)
-# app = launcher.app
-
-# import isaaclab.sim as sim_utils
-# from isaaclab.assets import Articulation
-# from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
-
-# ASSETS = Path(__file__).resolve().parents[1] / "assets"
 from pathlib import Path
 import math
 import random
 
+import yaml
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
+from isaaclab.utils import configclass
 from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 from AgenticSimulator.scene_api import SceneBundle
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
+
+CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "plate_cube.yaml"
+TABLE_SIZE = (1.2, 0.8, 0.05)
+TABLE_POSITION = (0.0, 0.0, 0.725)
+TABLE_HEIGHT = TABLE_POSITION[2] + TABLE_SIZE[2] / 2
+ROBOT_POSITION = (-0.45, 0.0, TABLE_HEIGHT)
+ROBOT_ORIENTATION = (1.0, 0.0, 0.0, 0.0)
+
+
+def load_scene_config():
+    """Read the configuration shared by the standalone scene and PPO task."""
+    return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+@sim_utils.clone
+def spawn_configured_object(prim_path, cfg, translation=None, orientation=None):
+    """Spawn the local USD with the configured mass and collision material."""
+    prim = sim_utils.spawn_from_usd(prim_path, cfg, translation, orientation)
+    sim_utils.define_mass_properties(
+        prim_path, sim_utils.MassPropertiesCfg(mass=cfg.custom_mass, density=0.0),
+    )
+    material_path = f"{prim_path}/CustomPhysicsMaterial"
+    cfg.custom_material.func(material_path, cfg.custom_material)
+    sim_utils.bind_physics_material(prim_path, material_path)
+    return prim
+
+
+@configclass
+class ConfiguredObjectCfg(sim_utils.UsdFileCfg):
+    func = spawn_configured_object
+    custom_mass: float = 1.0
+    custom_material: sim_utils.RigidBodyMaterialCfg | None = None
+
+
+def object_spawn_config(item):
+    """Use the same local asset and physics for standalone and parallel scenes."""
+    asset_path = ASSETS / item["asset"]
+    if not asset_path.is_file():
+        raise FileNotFoundError(asset_path)
+    physics = item["physics"]
+    material = item["material"]
+    return ConfiguredObjectCfg(
+        usd_path=str(asset_path.resolve()), scale=tuple(item["scale"]),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            rigid_body_enabled=True, kinematic_enabled=False,
+            disable_gravity=not physics["gravity"],
+            linear_damping=physics["linear_damping"], angular_damping=physics["angular_damping"],
+        ),
+        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+        custom_mass=physics["mass"],
+        custom_material=sim_utils.RigidBodyMaterialCfg(
+            static_friction=material["static_friction"], dynamic_friction=material["dynamic_friction"],
+            restitution=material["restitution"], friction_combine_mode="average", restitution_combine_mode="average",
+        ),
+    )
+
+
+def object_pose_bounds(item):
+    """Return configured position bounds and nominal WXYZ orientation."""
+    if "position_range" in item:
+        bounds = [tuple(item["position_range"][axis]) for axis in ("x", "y", "z")]
+    else:
+        bounds = [(value, value) for value in item["position"]]
+    return bounds, tuple(item.get("orientation", (1.0, 0.0, 0.0, 0.0)))
+
+
+def robot_config(prim_path="/World/Robot"):
+    """Return the plate-cube scene's local Franka high-PD configuration."""
+    cfg = FRANKA_PANDA_HIGH_PD_CFG.copy()
+    cfg.prim_path = prim_path
+    cfg.spawn.usd_path = str(ASSETS / "robots" / "franka" / "Franka.usd")
+    if not Path(cfg.spawn.usd_path).is_file():
+        raise FileNotFoundError(cfg.spawn.usd_path)
+    cfg.spawn.articulation_props.fix_root_link = True
+    cfg.spawn.rigid_props.disable_gravity = False
+    cfg.init_state.pos = ROBOT_POSITION
+    cfg.init_state.rot = ROBOT_ORIENTATION
+    return cfg
 
 
 def create_scene(config):
@@ -53,7 +104,7 @@ def create_scene(config):
     # 中心高度 0.725 m，因此上表面高度为 0.75 m。
     # 只设置碰撞，不设置动态刚体，使桌面固定。
     table = sim_utils.CuboidCfg(
-        size=(1.2, 0.8, 0.05),
+        size=TABLE_SIZE,
         collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(
             diffuse_color=(0.55, 0.40, 0.25)
@@ -62,32 +113,12 @@ def create_scene(config):
     table.func(
         "/World/Table",
         table,
-        translation=(0.0, 0.0, 0.725),
+        translation=TABLE_POSITION,
     )
 
     for item in config["objects"]:
         prim_path = f"/World/{item['name']}"
-        asset_path = ASSETS / item["asset"]
-
-        if not asset_path.is_file():
-            raise FileNotFoundError(asset_path)
-
-        physics = item["physics"]
-
-        cfg = sim_utils.UsdFileCfg(
-            usd_path=str(asset_path.resolve()),
-            scale=tuple(item["scale"]),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                rigid_body_enabled=True,
-                kinematic_enabled=False,
-                disable_gravity=not physics["gravity"],
-                linear_damping=physics["linear_damping"],
-                angular_damping=physics["angular_damping"],
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                collision_enabled=True,
-            ),
-        )
+        cfg = object_spawn_config(item)
 
         if "position_range" in item:
             ranges = item["position_range"]
@@ -121,48 +152,10 @@ def create_scene(config):
             orientation=orientation,
         )
 
-        # 显式添加质量配置，确保资产原本没有 MassAPI 时也能生效。
-        sim_utils.define_mass_properties(
-            prim_path,
-            sim_utils.MassPropertiesCfg(
-                mass=physics["mass"],
-                density=0.0,
-            ),
-        )
-
-        # 创建物理材质，并绑定到物体的碰撞形状。
-        material_path = f"{prim_path}/CustomPhysicsMaterial"
-
-        material_cfg = sim_utils.RigidBodyMaterialCfg(
-            static_friction=item["material"]["static_friction"],
-            dynamic_friction=item["material"]["dynamic_friction"],
-            restitution=item["material"]["restitution"],
-            friction_combine_mode="average",
-            restitution_combine_mode="average",
-        )
-
-        material_cfg.func(material_path, material_cfg)
-        sim_utils.bind_physics_material(prim_path, material_path)
-
 
 def create_robot():
-    cfg = FRANKA_PANDA_HIGH_PD_CFG.copy()
+    return Articulation(robot_config())
 
-    cfg.prim_path = "/World/Robot"
-    cfg.spawn.usd_path = str(
-        ASSETS / "robots" / "franka" / "Franka.usd"
-    )
-
-    # 固定机器人底座，开启各连杆的重力。
-    cfg.spawn.articulation_props.fix_root_link = True
-    cfg.spawn.rigid_props.disable_gravity = False
-
-    # 底座位于桌面左侧，机械臂朝 +X 方向。
-    # 当前桌面高度为 0.75 m。
-    cfg.init_state.pos = (-0.45, 0.0, 0.75)
-    cfg.init_state.rot = (1.0, 0.0, 0.0, 0.0)
-
-    return Articulation(cfg)
 
 def build_scene(config):
     create_scene(config)

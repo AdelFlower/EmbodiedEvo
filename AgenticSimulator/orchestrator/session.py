@@ -9,6 +9,8 @@
 调用链为：main() 创建执行器 → serve() 接收 socket 消息 →
 Session.handle() 校验并分发 → executor.execute() 执行具体实验。
 会话层只管理通用状态；具体任务、仿真进程和证据导出由执行层负责。
+执行层按照宿主指定的信息开放规则生成公开文件和公开结果；本模块负责
+转交这些结果，不解释具体实验的传感器字段，也不再次过滤结果内容。
 
 一次请求可以涉及 source、target 两侧，因此“请求次数”和“实验次数”
 分别记录。请求被接收时分配编号，每侧实际开始时才扣减该侧实验预算。
@@ -61,10 +63,17 @@ class ExperimentExecutor(Protocol):
        该回调在宿主调度线程中调用。
     4. timeout_sec 覆盖整次请求，包括两侧实验及必要的准备工作。
     5. 返回或抛出异常前，结束本次请求的 worker，并保存已有证据。
-    6. 预期的实验失败应返回结构化结果，不应丢弃另一侧的结果。
-    7. public_dir 中只能放 Agent 允许读取的内容：
-       源侧允许内部诊断；目标侧仅允许视频及必要的视频元信息。
-    8. 返回值只包含公开结果，不包含目标私有配置或内部 traceback。
+    6. 源侧代码报错、目标 rollout 失败等预期的实验失败应返回结构化结果，
+       保留另一侧已有结果及失败证据。源侧可返回完整代码执行诊断，目标侧
+       的错误信息按其开放规则处理。执行器自身异常可抛给会话层，由会话层
+       私下保存 traceback，并向 Agent 返回通用执行错误。
+    7. 源侧允许公开源仿真的完整实验信息和代码执行诊断；目标侧按宿主配置
+       指定的范围公开信息，不在会话层限定具体传感器或字段。Agent 请求
+       不能扩大目标侧的信息权限。源侧的完整信息不包括宿主凭据、目标私有
+       数据等与源仿真实验无关的信息。
+    8. adapter 原始输出先写入 private_dir；执行器再按各侧开放规则生成
+       public_dir 中的文件及返回值。字段、错误说明和文件引用都须符合该
+       侧规则，不能只过滤返回字典而把完整的目标轨迹放进公开目录。
 
     返回结构：
         {
@@ -77,6 +86,8 @@ class ExperimentExecutor(Protocol):
 
     results 只包含本次请求涉及的环境。
     source_probe 的 results 只有 source。
+    results 必须已经是可交给 Agent 的公开结果；会话层将直接转交，不能
+    将 adapter 的原始返回值未经公开处理直接作为执行器返回值。
     """
 
     def execute(
@@ -89,8 +100,13 @@ class ExperimentExecutor(Protocol):
         timeout_sec: float,
         on_start: Callable[[str], None],
     ) -> dict:
+        """执行请求并返回按源/目标信息开放规则处理后的公开结果。
+
+        private_dir 保存完整原始结果、内部日志和失败证据，仅宿主可见。
+        public_dir 位于 Agent 工作区，只保存按开放规则生成的公开文件。
+        信息开放规则由宿主提供，不由 request 中的 Agent 输入决定。
+        """
         # Protocol 描述结构化接口，不提供实现；实际对象由工厂创建。
-        # private_dir 是宿主证据目录，public_dir 位于 Agent 可见工作区。
         ...
 
     def select_candidate(self, candidate_id: str) -> bool:
@@ -373,7 +389,8 @@ class Session:
             )
 
             # 要求每个请求环境都有结果，包括结构化的失败结果。
-            # 这里只验证外层契约，环境结果内部字段由执行器定义。
+            # 这里只验证外层契约；执行器负责按各侧开放规则处理内部字段和文件。
+            # 下方直接转交 results，不再次过滤，也不能直接接入 adapter 原始结果。
             if (
                 not isinstance(outcome, dict)
                 or type(outcome.get("ok")) is not bool
@@ -389,7 +406,9 @@ class Session:
             )
 
         except Exception:
-            # 完整错误只保存到宿主，避免泄露目标配置和内部状态。
+            # 此处处理执行器自身异常或返回值违反接口约定的情况。
+            # 预期的实验失败应由执行器返回结构化结果，源侧代码诊断随结果返回。
+            # 未处理异常的完整 traceback 只保存到宿主，避免泄露目标配置和内部状态。
             # 已有部分证据由 executor 保留，不自动重跑。
             (private_dir / "executor-error.txt").write_text(
                 traceback.format_exc(),

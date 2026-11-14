@@ -29,7 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = args.run_dir.expanduser().resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parent) + os.pathsep + env.get("PYTHONPATH", "")
+    source_root = Path(__file__).resolve().parent
+    env["PYTHONPATH"] = os.pathsep.join((str(source_root), str(source_root.parents[3]), env.get("PYTHONPATH", "")))
     command = [sys.executable, "-u", "-m", "isaaclab_arena.play", "--checkpoint", str(checkpoint), *playback_args]
     print(f"Playback log: {run_dir / 'play.log'}", flush=True)
     with (run_dir / "play.log").open("x") as log:
