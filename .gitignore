@@ -48,3 +48,12 @@ auth.json
 /configs/*.local.*
 
 /AgenticSimulator/assets/
+
+# AgenticSimulator runtime evidence and local trained policy
+/AgenticSimulator/runs/
+/AgenticSimulator/tasks/lift_cube/policy/
+
+# Test code at any depth
+tests/
+test_*.py
+*_test.py
