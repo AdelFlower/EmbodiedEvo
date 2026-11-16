@@ -1,6 +1,8 @@
 """将已有 lift_cube 任务接入源/目标实验执行端。
 
 调用方先启动 Isaac Sim 应用，再 open()、rollout()，最后在 finally 中 close()。
+续训使用 open_training() 获取环境和训练配置，由训练脚本加载 checkpoint 并学习，
+最后同样调用 close()。训练入口不创建录像相机。
 本模块不启动应用、不分配 GPU、不选择候选，也不向 Agent 发布宿主侧证据。
 
 config 示例（路径由执行端解析）：
@@ -42,6 +44,37 @@ class LiftCubeAdapter:
 
     def open(self, physics=None) -> None:
         """恢复任务环境与固定 policy；异常交给执行端记录，不自动重试。"""
+        self._prepare_open()
+        env_cfg = self._load_env_config()
+        env_cfg.scene.num_envs = 1
+        self.env = self._build_env(
+            env_cfg, physics, record_video=self.config.get("record_video", True),
+        )
+        try:
+            self._load_policy()
+        except BaseException:
+            self.close()
+            raise
+
+    def open_training(self, physics=None, *, num_envs: int, configure=None) -> tuple:
+        """创建训练环境，返回 (原生环境, agent_cfg)，不加载策略或创建训练器。
+
+        configure(env_cfg, agent_cfg) 在恢复配置后、创建环境前调用，用于调整
+        奖励、课程和训练参数；随后应用校准物理。任务目标与成功条件保持固定。
+        训练脚本负责环境包装、checkpoint 加载、学习与保存，环境由 close() 关闭。
+        """
+        self._prepare_open()
+        env_cfg = self._load_env_config()
+        agent_cfg = self._load_agent_config()
+        env_cfg.scene.num_envs = num_envs
+        if configure is not None:
+            configure(env_cfg, agent_cfg)
+        agent_cfg.device = self.config["device"]
+        self.env = self._build_env(env_cfg, physics, record_video=False)
+        return self.env, agent_cfg
+
+    def _prepare_open(self) -> None:
+        """检查生命周期，并准备本任务的导入路径。"""
         if self.env is not None:
             raise RuntimeError("Adapter is already open")
 
@@ -50,16 +83,8 @@ class LiftCubeAdapter:
         if task_root not in sys.path:
             sys.path.insert(0, task_root)
 
-        self.env = self._build_env(physics)
-        try:
-            self._load_policy()
-        except BaseException:
-            self.close()
-            raise
-
-    def _build_env(self, physics):
-        """复用训练环境和配置恢复方式，不另写场景或 rollout 动力学。"""
-        from isaaclab.envs import ManagerBasedRLEnv
+    def _load_env_config(self):
+        """沿用 play.py 的配置恢复和旧 checkpoint 资产兼容方式。"""
         from isaaclab_arena.env_cfg import LiftCubeEnvCfg
         from isaaclab_arena.play import load_config, restore_config
 
@@ -72,7 +97,22 @@ class LiftCubeAdapter:
                 usd_path=saved["scene"]["table"]["spawn"]["usd_path"]
             )
         restore_config(env_cfg, saved)
-        env_cfg.scene.num_envs = 1
+        return env_cfg
+
+    def _load_agent_config(self):
+        """恢复策略和算法配置，供推理加载与续训共用。"""
+        from isaaclab_arena.play import load_config, restore_config
+        from isaaclab_arena.ppo_cfg import RLPolicyCfg
+
+        agent_cfg = RLPolicyCfg()
+        restore_config(agent_cfg, load_config(self.params_dir / "agent.yaml"))
+        agent_cfg.device = self.config["device"]
+        return agent_cfg
+
+    def _build_env(self, env_cfg, physics, *, record_video: bool):
+        """训练与 rollout 共用环境创建和校准物理接入。"""
+        from isaaclab.envs import ManagerBasedRLEnv
+
         env_cfg.sim.device = self.config["device"]
         if physics is not None:
             physics.configure(env_cfg)
@@ -86,7 +126,7 @@ class LiftCubeAdapter:
         env_cfg.viewer.lookat = (0.0, 0.0, 0.75)
         env_cfg.viewer.origin_type = "world"
         env_cfg.viewer.resolution = (640, 480)
-        if self.config.get("record_video", True):
+        if record_video:
             from isaaclab.sensors import CameraCfg
             from isaaclab.sim import PinholeCameraCfg
 
@@ -112,7 +152,7 @@ class LiftCubeAdapter:
 
         env = ManagerBasedRLEnv(
             cfg=env_cfg,
-            render_mode="rgb_array" if self.config.get("record_video", True) else None,
+            render_mode="rgb_array" if record_video else None,
         )
         if physics is not None:
             apply_action = env.action_manager.apply_action
@@ -129,13 +169,9 @@ class LiftCubeAdapter:
     def _load_policy(self) -> None:
         """沿用 RSL-RL 推理加载，保留训练时的动作裁剪和观测归一化。"""
         from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
-        from isaaclab_arena.play import load_config, restore_config
-        from isaaclab_arena.ppo_cfg import RLPolicyCfg
         from rsl_rl.runners import OnPolicyRunner
 
-        agent_cfg = RLPolicyCfg()
-        restore_config(agent_cfg, load_config(self.params_dir / "agent.yaml"))
-        agent_cfg.device = self.config["device"]
+        agent_cfg = self._load_agent_config()
         self.env = RslRlVecEnvWrapper(self.env, clip_actions=agent_cfg.clip_actions)
         self.runner = OnPolicyRunner(
             self.env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device,
