@@ -95,6 +95,9 @@ def run_job(job: dict) -> dict:
                     adapter.close()
                 except BaseException as exc:
                     record_error(exc, "adapter_close")
+            # Kit 快速关闭可能直接结束进程，必须在关闭应用前保存回合报告。
+            # worker 仍等待进程退出，并结合退出码判断执行状态。
+            write_json(Path(job["report_path"]), report)
         finally:
             if launcher is not None:
                 try:
@@ -102,7 +105,7 @@ def run_job(job: dict) -> dict:
                 except BaseException as exc:
                     record_error(exc, "app_close")
 
-    # 成功报告由 main 在两层清理都结束后写入。
+    # 若应用关闭正常返回，main 再保存最终报告；关闭异常已由 record_error 更新。
     return report
 
 

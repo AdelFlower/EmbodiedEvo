@@ -17,7 +17,7 @@ Session.handle() 校验并分发 → executor.execute() 执行具体实验。
 
 阅读时可以先记住几个词：
 - source 是 Agent 可修改的源仿真器，target 是用于对照的目标环境。
-- rollout 是按指定 policy（控制策略）运行实验，source_probe 是在源侧运行脚本。
+- rollout 是按指定 policy（控制策略）运行实验。
 - executor 是实际运行实验的对象，本文件通过约定的接口调用它。
 - 回调是“传给另一段代码、由它在约定时机调用的函数”，例如 on_start。
 - “落盘”就是把当前信息写进文件，避免信息只留在进程内存里。
@@ -30,6 +30,7 @@ import contextlib
 import json
 import math
 import os
+import secrets
 import signal
 import socket
 import time
@@ -57,7 +58,7 @@ class ExperimentExecutor(Protocol):
 
     execute() 的约定：
 
-    1. 根据 request 的 op 执行 rollout 或 source_probe。
+    1. 根据 request 执行 rollout。
     2. 源快照、policy 选择、任务接入和证据导出由执行层负责。
     3. 每侧实验实际开始前，调用一次 on_start(environment)。
        该回调在宿主调度线程中调用。
@@ -85,7 +86,6 @@ class ExperimentExecutor(Protocol):
         }
 
     results 只包含本次请求涉及的环境。
-    source_probe 的 results 只有 source。
     results 必须已经是可交给 Agent 的公开结果；会话层将直接转交，不能
     将 adapter 的原始返回值未经公开处理直接作为执行器返回值。
     """
@@ -235,8 +235,9 @@ class Session:
         if op == "rollout":
             return self.handle_rollout(request)
 
-        if op == "source_probe":
-            return self.handle_source_probe(request)
+        # source_probe 暂停接入。
+        # if op == "source_probe":
+        #     return self.handle_source_probe(request)
 
         if op == "finish":
             return self.finish(request.get("candidate_id"))
@@ -263,6 +264,15 @@ class Session:
         if not isinstance(policy_id, str) or not policy_id:
             raise RequestError("policy_id must be a nonempty string")
 
+        # 每次请求只确定一次种子，交给执行器用于源、目标两侧。
+        # 不使用负数，避免模拟器将其解释为再次随机生成种子。
+        if "seed" in request:
+            seed = request["seed"]
+            if type(seed) is not int or not 0 <= seed < 2**31:
+                raise RequestError("seed must be an integer between 0 and 2147483647")
+        else:
+            seed = secrets.randbelow(2**31)
+
         # 重新构造 payload，只将本操作约定的字段传给执行器。
         # 例如 environments=["source", "target"] 表示一个请求分别跑两侧，
         # 请求编号只增加一次，两侧开始时各扣一次对应预算。
@@ -271,26 +281,27 @@ class Session:
             "environments": list(environments),
             "policy_id": policy_id,
             "episode_id": self.episode_id(request),
+            "seed": seed,
         }
 
         return self._execute(payload, environments)
 
-    def handle_source_probe(self, request: dict) -> dict:
-        """接收工作区内的脚本路径，由执行层读取并运行。"""
-        script_path = request.get("script_path")
-
-        if not isinstance(script_path, str) or not script_path.strip():
-            raise RequestError("script_path must be a nonempty string")
-
-        # 这里只检查非空；路径解析、访问边界和脚本读取由执行层负责。
-        payload = {
-            "op": "source_probe",
-            "episode_id": self.episode_id(request),
-            "script_path": script_path,
-        }
-
-        # probe 只能在源环境运行，也只检查并扣减 source 预算。
-        return self._execute(payload, ["source"])
+    # def handle_source_probe(self, request: dict) -> dict:
+    #     """接收工作区内的脚本路径，由执行层读取并运行。"""
+    #     script_path = request.get("script_path")
+    #
+    #     if not isinstance(script_path, str) or not script_path.strip():
+    #         raise RequestError("script_path must be a nonempty string")
+    #
+    #     # 这里只检查非空；路径解析、访问边界和脚本读取由执行层负责。
+    #     payload = {
+    #         "op": "source_probe",
+    #         "episode_id": self.episode_id(request),
+    #         "script_path": script_path,
+    #     }
+    #
+    #     # probe 只能在源环境运行，也只检查并扣减 source 预算。
+    #     return self._execute(payload, ["source"])
 
     def _execute(self, request: dict, environments: list[str]) -> dict:
         """共用的请求登记、预算和结果记录逻辑。"""
@@ -323,6 +334,7 @@ class Session:
             {
                 "request_id": request_id,
                 "status": "running",
+                "seed": request["seed"],
             },
         )
 
@@ -376,6 +388,7 @@ class Session:
         response = {
             "request_id": request_id,
             "observation_dir": str(public_dir.relative_to(self.workspace)),
+            "seed": request["seed"],
         }
 
         try:

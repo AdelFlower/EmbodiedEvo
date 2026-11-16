@@ -23,8 +23,8 @@ startup_timeout_sec = 120
 execution_timeout_sec = 1200
 # 暂定每侧各 100 次；按子进程实际启动计数，启动后的失败也计入。
 # 删除某侧 budget 字段表示不限制次数，0 表示不允许启动该侧。
-source_budget = 100
-target_budget = 100
+source_budget = 10
+target_budget = 10
 # 不填写 timeout_sec 表示不设会话总时限；需要时填写正数，单位为秒。
 
 [experiment]
@@ -37,8 +37,10 @@ checkpoint = "policy/model.pt"
 params_dir = "policy/params"
 
 # 数组下标即 episode_id；第一项是 episode_id = 0，两侧使用同一回合配置。
+# 本任务暂不需要额外回合字段，保留空表供 episode_id = 0 选择。
+# seed 由每次 rollout 请求决定：Agent 可指定，省略时由 session 随机生成。
+# 同一次请求的源、目标共用该种子；复查已有条件时指定之前返回的 seed。
 [[experiment.episodes]]
-seed = 42
 
 [experiment.source]
 # 相对于 worker 为本次请求准备的源候选目录。

@@ -67,6 +67,10 @@ def main(argv=None):
     )
     rollout.add_argument("--policy-id", default="default", help="宿主配置中的 policy 标识")
     rollout.add_argument("--episode-id", type=int, default=0, help="宿主配置中的回合编号，从 0 开始")
+    rollout.add_argument(
+        "--seed", type=int,
+        help="指定随机种子以复现初始条件；省略时由宿主生成，两侧共用同一种子",
+    )
 
     finish = sub.add_parser("finish", help="提交最终候选并结束会话")
     finish.add_argument(
@@ -82,6 +86,8 @@ def main(argv=None):
             policy_id=args.policy_id,
             episode_id=args.episode_id,
         )
+        if args.seed is not None:
+            payload["seed"] = args.seed
     elif args.command == "finish" and args.candidate_id is not None:
         payload["candidate_id"] = args.candidate_id
 

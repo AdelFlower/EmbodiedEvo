@@ -19,7 +19,7 @@ target.physics 和可选 gpu_lock_dir 等宿主路径以此为基准，不以运
 子进程先等待 stdin 的一行 start，再初始化模拟器及执行实验；EOF 表示取消。
 宿主创建进程成功后登记 on_start，再发送 start，创建进程失败不扣实验预算。
 JOB 只含本侧配置、adapter、回合描述、设备、output_dir 和 report_path。
-source 另外收到独立的 source_dir，source_probe 还收到已保存的 script_path。
+source 另外收到独立的 source_dir。
 子进程将 adapter 输出写入 output_dir，向 report_path 写入：
     {"ok": true, "result": <adapter 返回字典>}
 预期实验失败使用 ok=false，可在 error 中保存诊断，已有 result 仍保留。
@@ -27,7 +27,7 @@ result.artifacts 是嵌套的路径字典，所有文件路径相对于 output_d
 退出码、日志和 report 同时保存；缺失报告、超时或崩溃不自动归因为基础设施故障。
 
 第一版顺序执行两侧。候选捕获依赖客户端串行提交：请求期间不得在后台改写
-source 或诊断脚本，尚未接入容器冻结。子进程配置分侧传递，但普通宿主进程
+source，尚未接入容器冻结。子进程配置分侧传递，但普通宿主进程
 本身不是文件访问隔离；源入口执行 Agent 代码前仍需落实目标私有数据访问边界。
 """
 
@@ -124,11 +124,14 @@ class ExperimentExecutor:
         return {"ok": all(item["ok"] for item in results.values()), "results": results}
 
     def _prepare_request(self, request, request_id, private_dir):
-        """解析宿主配置，固定源代码及 probe；每侧只收到自己需要的配置。"""
+        """解析宿主配置，固定源代码；每侧只收到自己需要的配置。"""
         op = request["op"]
-        sides = ["source"] if op == "source_probe" else request["environments"]
-        if op not in ("rollout", "source_probe"):
+        # source_probe 暂停接入。
+        # sides = ["source"] if op == "source_probe" else request["environments"]
+        # if op not in ("rollout", "source_probe"):
+        if op != "rollout":
             raise ValueError(f"Unsupported experiment operation: {op}")
+        sides = request["environments"]
         policy_id = request.get("policy_id", "default")
         episode_id = request["episode_id"]
         jobs = {}
@@ -144,6 +147,8 @@ class ExperimentExecutor:
                         policy[name] = str(self._path(policy[name]))
                 episode = copy.deepcopy(self.settings["episodes"][episode_id])
                 episode["episode_id"] = episode_id
+                # 种子由 session 为本次请求确定，两侧共用，不沿用任务配置中的旧值。
+                episode["seed"] = request["seed"]
                 settings = self.settings[side]
                 adapter_config = {**settings.get("adapter_config", {}), **policy}
                 job.update(
@@ -164,13 +169,13 @@ class ExperimentExecutor:
                     if not physics.is_relative_to(source.resolve()):
                         raise ValueError("Source physics must stay inside the candidate")
                     job["physics"] = str(physics)
-                    if op == "source_probe":
-                        script = (self.workspace / request["script_path"]).resolve()
-                        if not script.is_relative_to(self.workspace) or not script.is_file():
-                            raise ValueError("Probe must be a file inside the workspace")
-                        saved_script = directory / "probe.py"
-                        saved_script.write_bytes(script.read_bytes())
-                        job["script_path"] = str(saved_script)
+                    # if op == "source_probe":
+                    #     script = (self.workspace / request["script_path"]).resolve()
+                    #     if not script.is_relative_to(self.workspace) or not script.is_file():
+                    #         raise ValueError("Probe must be a file inside the workspace")
+                    #     saved_script = directory / "probe.py"
+                    #     saved_script.write_bytes(script.read_bytes())
+                    #     job["script_path"] = str(saved_script)
                 else:
                     physics = settings.get("physics")
                     job["physics"] = str(self._path(physics)) if physics is not None else None

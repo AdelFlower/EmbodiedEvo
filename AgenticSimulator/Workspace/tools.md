@@ -75,13 +75,28 @@ python scripts/env.py rollout --environments source target --policy-id default -
 - `--environments` 必填，可指定 source、target 或两侧，每侧最多出现一次。
 - `--policy-id` 默认为 `default`，选择宿主已配置的固定 policy，不接受模型文件路径。
 - `--episode-id` 默认为 `0`，选择宿主配置中的回合条目，不是实验请求编号。
+- `--seed` 可选，取值为 `0` 到 `2147483647` 的整数。指定时使用该种子；
+  省略时，宿主为本次请求随机生成一个种子，并在响应顶层的 `seed` 中返回。
 
 可用的 policy 标识和回合条目由宿主任务配置决定。上述命令使用客户端默认值，
 默认值不表示每个任务都只配置一个 policy 或一个回合条目。
 
 两侧按指定顺序执行，各运行一个完整回合，使用所选的同一 policy 和回合描述。
-回合描述的具体字段由任务解释；若包含随机种子，相同种子也不保证不同物理
-实现产生相同轨迹，应根据实际反馈比较。
+同一次请求的两侧共用一个种子。`episode_id` 选择预设回合配置，`seed` 控制
+任务定义的随机采样；即使回合编号不变，省略 `--seed` 的新请求也会重新生成种子。
+种子不改变固定目标的物理参数，也不扩大任务规定的随机采样范围。
+
+需要复查已有条件时，使用之前响应中的种子。例如，已有目标反馈的 `seed` 为
+`123`，修改源代码后可运行：
+
+```bash
+python scripts/env.py rollout --environments source --policy-id default --episode-id 0 --seed 123
+```
+
+这里的 policy 和回合编号也应与已有目标反馈一致。分开请求源、目标时，若两次
+都省略 `--seed`，宿主会分别生成种子，不能当作同一初始条件的成对实验。
+相同种子用于尽量复现采样条件，不保证不同物理实现产生相同轨迹，也不保证
+仿真逐步完全确定；仍应结合实际反馈比较。
 
 每次源实验准备时，宿主保存当前整个 `source/`，分配候选编号，再复制一份用于
 执行。`reference/` 不随候选归档或复制到候选运行目录。目标单侧请求不保存源候选。
@@ -96,6 +111,7 @@ python scripts/env.py rollout --environments source target --policy-id default -
 | --- | --- |
 | `ok` | 请求中的实验是否均正常执行；不代表任务成功或物理校准完成 |
 | `request_id` | 本次执行请求编号 |
+| `seed` | 本次请求确定的随机种子，两侧共用；复查时通过 `--seed` 指定 |
 | `observation_dir` | 本次公开反馈目录，相对于工作区 |
 | `results.source` | 源侧结果，请求包含 source 时存在 |
 | `results.target` | 目标侧结果，请求包含 target 时存在 |
@@ -154,7 +170,6 @@ def before_step(env, dt):
 该目录内，不依赖工作区的 `reference/` 路径进行导入。使用已有模拟器接口，
 不修改或重新编译引擎。
 保持固定 policy 的观测与动作约定、控制周期、任务目标、评价规则及录像设置。
-当前客户端不提供任意诊断脚本执行命令，`source_probe` 尚未实现。
 
 ## finish：提交最终候选
 
