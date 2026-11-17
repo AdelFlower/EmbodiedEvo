@@ -1,8 +1,8 @@
-"""源仿真校准会话的命令行客户端，只依赖 Python 标准库。
+"""源仿真校准与策略续训会话的命令行客户端，只依赖 Python 标准库。
 
 在 Agent 工作区中调用，socket 地址由 runner 注入环境变量。
-本文件只发送请求并打印宿主返回的 JSON；源候选保存、仿真执行和反馈发布
-由宿主负责。请求期间应等待返回，再修改 source/ 中的代码。
+本文件只发送请求并打印宿主返回的 JSON；源候选保存、仿真执行、训练和反馈发布
+由宿主负责。请求期间应等待返回，再修改 source/ 或 training/ 中的代码。
 """
 
 from __future__ import annotations
@@ -60,22 +60,42 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="查询会话状态和剩余预算，不运行实验")
 
-    rollout = sub.add_parser("rollout", help="使用固定 policy 运行源环境、目标环境或两侧")
+    rollout = sub.add_parser("rollout", help="使用指定策略运行源环境、目标环境或两侧，默认最新策略")
     rollout.add_argument(
         "--environments", nargs="+", choices=("source", "target"), required=True,
         help="要执行的环境，可填写 source target；每侧最多出现一次",
     )
-    rollout.add_argument("--policy-id", default="default", help="宿主配置中的 policy 标识")
+    rollout.add_argument(
+        "--policy-id", default="latest",
+        help="策略标识：latest 为最新策略（默认），default 为 P0，也可指定训练返回的策略编号",
+    )
     rollout.add_argument("--episode-id", type=int, default=0, help="宿主配置中的回合编号，从 0 开始")
     rollout.add_argument(
         "--seed", type=int,
         help="指定随机种子以复现初始条件；省略时由宿主生成，两侧共用同一种子",
     )
 
-    finish = sub.add_parser("finish", help="提交最终候选并结束会话")
+    train = sub.add_parser(
+        "train", help="在校准环境中从最新 checkpoint 续训一轮",
+        description=(
+            "使用 training/ 中的配方续训，可沿用原配方或按需修改。"
+            "每次固定训练 1000 iterations，每 100 iterations 保存 checkpoint；"
+            "不自动执行评价 rollout。"
+        ),
+    )
+    train.add_argument(
+        "--candidate-id",
+        help="首次训练必须指定源实验返回的校准候选编号；后续省略以沿用固定候选",
+    )
+    train.add_argument(
+        "--num-envs", type=int,
+        help="并行环境数量；省略时使用宿主默认值 4096",
+    )
+
+    finish = sub.add_parser("finish", help="提交最终候选与最新策略并结束会话")
     finish.add_argument(
         "--candidate-id",
-        help="源实验返回的候选编号；省略则不选择候选，直接结束会话",
+        help="源实验返回的候选编号；续训阶段省略则提交固定校准候选，校准阶段省略则不选择候选",
     )
 
     args = parser.parse_args(argv)
@@ -88,6 +108,11 @@ def main(argv=None):
         )
         if args.seed is not None:
             payload["seed"] = args.seed
+    elif args.command == "train":
+        if args.candidate_id is not None:
+            payload["candidate_id"] = args.candidate_id
+        if args.num_envs is not None:
+            payload["num_envs"] = args.num_envs
     elif args.command == "finish" and args.candidate_id is not None:
         payload["candidate_id"] = args.candidate_id
 

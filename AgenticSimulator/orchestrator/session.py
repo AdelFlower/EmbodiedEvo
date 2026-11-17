@@ -14,10 +14,14 @@ Session.handle() 校验并分发 → executor.execute() 执行具体实验。
 
 一次请求可以涉及 source、target 两侧，因此“请求次数”和“实验次数”
 分别记录。请求被接收时分配编号，每侧实际开始时才扣减该侧实验预算。
+train 只涉及 source，每次固定续训 1000 iterations，默认使用 4096 个并行环境。
+rollout 使用配置中的请求时限；train 不设请求时限，等待训练完成或报错返回。
+训练本身不追加评价 rollout；后续实验或 finish 由 Agent 决定。
 
 阅读时可以先记住几个词：
 - source 是 Agent 可修改的源仿真器，target 是用于对照的目标环境。
 - rollout 是按指定 policy（控制策略）运行实验。
+- train 是从最新策略继续学习；首次请求指定校准候选，之后固定使用该候选。
 - executor 是实际运行实验的对象，本文件通过约定的接口调用它。
 - 回调是“传给另一段代码、由它在约定时机调用的函数”，例如 on_start。
 - “落盘”就是把当前信息写进文件，避免信息只留在进程内存里。
@@ -44,6 +48,8 @@ from .session_client import receive, send
 
 # 此标识属于 AgenticSimulator 的校准会话协议，随 status 返回给客户端。
 SESSION_PROTOCOL = "sim-calibration-v1"
+TRAINING_ITERATIONS = 1000
+DEFAULT_TRAINING_NUM_ENVS = 4096
 
 
 class RequestError(ValueError):
@@ -53,16 +59,21 @@ class RequestError(ValueError):
 class ExperimentExecutor(Protocol):
     """宿主侧实验调度接口，约定由 worker 模块提供具体实现。
 
-    Protocol 可以理解为一张接口清单：提供 execute/select_candidate/close
-    这些方法的对象即可接入。此处的省略号不是实验实现，也不会自动运行仿真。
+    Protocol 可以理解为一张接口清单：执行器提供 training_state 状态和
+    execute/select_candidate/close 方法。此处的省略号不是实验实现，也不会自动运行仿真。
+
+    training_state 由执行器维护，包含 candidate_id、latest_policy_id 和 policies。
+    policies 是已成功登记的策略表，其中包含宿主路径；会话层只公开候选编号、
+    最新策略编号和完成轮数，不直接向 Agent 返回该表。
 
     execute() 的约定：
 
-    1. 根据 request 执行 rollout。
+    1. 根据 request 执行 rollout 或一次 train，不自动追加下一轮训练。
     2. 源快照、policy 选择、任务接入和证据导出由执行层负责。
     3. 每侧实验实际开始前，调用一次 on_start(environment)。
        该回调在宿主调度线程中调用。
-    4. timeout_sec 覆盖整次请求，包括两侧实验及必要的准备工作。
+    4. timeout_sec 为秒数时覆盖整次请求，包括两侧实验及必要的准备工作；
+       None 表示不设请求时限。rollout 使用配置值，train 使用 None。
     5. 返回或抛出异常前，结束本次请求的 worker，并保存已有证据。
     6. 源侧代码报错、目标 rollout 失败等预期的实验失败应返回结构化结果，
        保留另一侧已有结果及失败证据。源侧可返回完整代码执行诊断，目标侧
@@ -90,6 +101,8 @@ class ExperimentExecutor(Protocol):
     将 adapter 的原始返回值未经公开处理直接作为执行器返回值。
     """
 
+    training_state: dict
+
     def execute(
         self,
         request: dict,
@@ -97,7 +110,7 @@ class ExperimentExecutor(Protocol):
         request_id: str,
         private_dir: Path,
         public_dir: Path,
-        timeout_sec: float,
+        timeout_sec: float | None,
         on_start: Callable[[str], None],
     ) -> dict:
         """执行请求并返回按源/目标信息开放规则处理后的公开结果。
@@ -143,7 +156,7 @@ class Session:
 
         settings = cfg["session"]
 
-        # 超时约束整次请求，不能让双侧请求各自获得一份完整超时时间。
+        # 此时限用于 rollout，双侧请求共用；train 不使用该时限。
         self.execution_timeout = float(settings["execution_timeout_sec"])
         if (
             not math.isfinite(self.execution_timeout)
@@ -168,6 +181,7 @@ class Session:
         self.latest_request = None
         self.active_request = None
         self.final_candidate = None
+        self.final_policy_id = None
 
         # closed 表示会话是否终止，reason 表示当前阶段或终止原因。
         self.closed = False
@@ -188,12 +202,19 @@ class Session:
             )
             for side in self.used
         }
+        training = self.executor.training_state
 
         return {
             "ok": True,
             "protocol": SESSION_PROTOCOL,
             "closed": self.closed,
             "reason": self.reason,
+            "phase": "training" if training["candidate_id"] is not None else "calibration",
+            "calibrated_candidate": training["candidate_id"],
+            "latest_policy_id": training["latest_policy_id"],
+            "training_rounds_completed": len(training["policies"]),
+            "training_iterations_per_request": TRAINING_ITERATIONS,
+            "training_num_envs_default": DEFAULT_TRAINING_NUM_ENVS,
             "requests_used": self.request_index,
             # 复制计数表，避免调用者通过返回值修改内部预算状态。
             "experiments_used": dict(self.used),
@@ -201,6 +222,7 @@ class Session:
             "latest_request": self.latest_request,
             "active_request": self.active_request,
             "final_candidate": self.final_candidate,
+            "final_policy_id": self.final_policy_id,
         }
 
     def save(self) -> None:
@@ -235,9 +257,8 @@ class Session:
         if op == "rollout":
             return self.handle_rollout(request)
 
-        # source_probe 暂停接入。
-        # if op == "source_probe":
-        #     return self.handle_source_probe(request)
+        if op == "train":
+            return self.handle_train(request)
 
         if op == "finish":
             return self.finish(request.get("candidate_id"))
@@ -260,7 +281,7 @@ class Session:
             )
 
         # 会话层只校验标识格式，具体 policy 是否存在由执行层判断。
-        policy_id = request.get("policy_id", "default")
+        policy_id = request.get("policy_id", "latest")
         if not isinstance(policy_id, str) or not policy_id:
             raise RequestError("policy_id must be a nonempty string")
 
@@ -286,22 +307,31 @@ class Session:
 
         return self._execute(payload, environments)
 
-    # def handle_source_probe(self, request: dict) -> dict:
-    #     """接收工作区内的脚本路径，由执行层读取并运行。"""
-    #     script_path = request.get("script_path")
-    #
-    #     if not isinstance(script_path, str) or not script_path.strip():
-    #         raise RequestError("script_path must be a nonempty string")
-    #
-    #     # 这里只检查非空；路径解析、访问边界和脚本读取由执行层负责。
-    #     payload = {
-    #         "op": "source_probe",
-    #         "episode_id": self.episode_id(request),
-    #         "script_path": script_path,
-    #     }
-    #
-    #     # probe 只能在源环境运行，也只检查并扣减 source 预算。
-    #     return self._execute(payload, ["source"])
+    def handle_train(self, request: dict) -> dict:
+        """准备一轮固定训练量的续训请求，只消耗一次源侧实验预算。"""
+        calibrated = self.executor.training_state["candidate_id"]
+        candidate_id = request.get("candidate_id", calibrated)
+        if candidate_id is None:
+            raise RequestError("The first train request requires candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            raise RequestError("candidate_id must be a nonempty string")
+        if calibrated is not None and candidate_id != calibrated:
+            raise RequestError("The calibrated candidate is fixed during training")
+
+        num_envs = request.get("num_envs", DEFAULT_TRAINING_NUM_ENVS)
+        if type(num_envs) is not int or num_envs < 1:
+            raise RequestError("num_envs must be a positive integer")
+
+        # 第一版固定训练量和父策略选择，不采用 Agent 传入的 iterations 或 policy_id。
+        payload = {
+            "op": "train",
+            "environments": ["source"],
+            "candidate_id": candidate_id,
+            "policy_id": "latest",
+            "iterations": TRAINING_ITERATIONS,
+            "num_envs": num_envs,
+        }
+        return self._execute(payload, ["source"])
 
     def _execute(self, request: dict, environments: list[str]) -> dict:
         """共用的请求登记、预算和结果记录逻辑。"""
@@ -310,6 +340,9 @@ class Session:
             limit = self.limits[side]
             if limit is not None and self.used[side] >= limit:
                 raise RequestError(f"{side} experiment budget exhausted")
+
+        # 训练按固定迭代数完成，不按墙钟时间截断；runner 与执行器接收同一约定。
+        timeout_sec = None if request["op"] == "train" else self.execution_timeout
 
         # 编号至少六位，方便目录排序；一次双侧实验仍然只使用一个编号。
         self.request_index += 1
@@ -325,6 +358,12 @@ class Session:
         self.latest_request = request_id
         self.active_request = request_id
         self.reason = "executing"
+        # rollout 有采样种子；train 记录本轮训练量与环境数量，不虚构 rollout 种子。
+        request_details = {
+            key: request[key]
+            for key in ("op", "seed", "candidate_id", "iterations", "num_envs")
+            if key in request
+        }
 
         # 先保存受理凭据和 running 占位结果，再启动执行器。
         # 若进程中断，磁盘上仍能区分“已受理”与“已正常返回”。
@@ -334,7 +373,7 @@ class Session:
             {
                 "request_id": request_id,
                 "status": "running",
-                "seed": request["seed"],
+                **request_details,
             },
         )
 
@@ -375,12 +414,12 @@ class Session:
             )
             self.save()
 
-        # 提前通知 runner 进入执行阶段，并提供整次请求的超时配置。
+        # 提前通知 runner 进入执行阶段；timeout=null 表示执行中但不设请求时限。
         self.event(
             {
                 "event": "executing",
                 "request_id": request_id,
-                "timeout": self.execution_timeout,
+                "timeout": timeout_sec,
             }
         )
 
@@ -388,7 +427,7 @@ class Session:
         response = {
             "request_id": request_id,
             "observation_dir": str(public_dir.relative_to(self.workspace)),
-            "seed": request["seed"],
+            **request_details,
         }
 
         try:
@@ -397,7 +436,7 @@ class Session:
                 request_id=request_id,
                 private_dir=private_dir / "execution",
                 public_dir=public_dir,
-                timeout_sec=self.execution_timeout,
+                timeout_sec=timeout_sec,
                 on_start=on_start,
             )
 
@@ -473,17 +512,25 @@ class Session:
         return response
 
     def finish(self, candidate_id: str | None) -> dict:
-        """记录 Agent 的最终选择，不评价其物理效果。"""
+        """记录最终候选及最新策略；允许在任意一轮训练结束后提交。"""
+        training = self.executor.training_state
+        calibrated = training["candidate_id"]
+        if candidate_id is None:
+            candidate_id = calibrated
+
         # 先交给执行器确认并记录候选；选择失败时不关闭当前会话。
         if candidate_id is not None:
             if not isinstance(candidate_id, str) or not candidate_id:
                 raise RequestError("candidate_id must be a nonempty string")
+            if calibrated is not None and candidate_id != calibrated:
+                raise RequestError("Finish must use the fixed calibrated candidate")
 
             if not self.executor.select_candidate(candidate_id):
                 raise RequestError("Unknown source candidate")
 
         # 允许没有最终候选时结束，例如全部实验均失败。
         self.final_candidate = candidate_id
+        self.final_policy_id = training["latest_policy_id"] if candidate_id is not None else None
         self.closed = True
         self.reason = "agent_finished"
         self.save()
@@ -543,7 +590,7 @@ def serve(
                         TimeoutError,
                     ),
                 ):
-                    # 限制连接读写等待；实验总时限另由 execution_timeout 管理。
+                    # 只限制 socket 读写等待，不限制 session.handle 内的训练执行时间。
                     connection.settimeout(10)
 
                     with connection.makefile("rwb") as stream:

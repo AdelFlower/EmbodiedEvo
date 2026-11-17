@@ -5,8 +5,11 @@ RUN 是 worker 已创建的运行目录，名称以 YYYYMMDDHHMM 开头。
 本进程等待 stdin 中的 start 后启动 Isaac Sim，再加载任务 adapter 和源物理候选。
 source_dir 是 worker 为本次请求准备的候选运行副本，本入口不捕获或选择候选。
 
-第一版只执行 rollout；source_probe 尚未实现，提交时会明确报错。
-轨迹、视频由 adapter 记录；报告及日志由 worker 收集并发布。
+支持 rollout 和 train。训练任务通过 training_dir 指定训练代码运行副本，
+training 指定副本内的入口（默认 train.py），iterations 指定本轮新增迭代次数，
+num_envs 指定并行环境数量（默认 4096）。上一轮 checkpoint 及配置由
+adapter_config 提供。训练关闭录像相机，输出位置由 output_dir 指定。
+轨迹、视频由 adapter 记录，训练产物由训练脚本保存；报告及日志由 worker 收集并发布。
 候选路径校验只约束加载入口，不提供宿主文件访问隔离。
 """
 
@@ -33,16 +36,22 @@ def load_adapter(entry: str):
 
 def load_source_physics(source_dir: str, physics_path: str):
     """从候选运行副本加载物理模块，configure/before_step 由 adapter 调用。"""
-    source = Path(source_dir).resolve()
-    path = (source / physics_path).resolve()
-    if not path.is_relative_to(source):
-        raise ValueError("Source physics must stay inside the candidate")
-    name = "_agenticsimulator_source_physics"
+    return _load_candidate_module(
+        source_dir, physics_path, "_agenticsimulator_source_physics",
+    )
+
+
+def _load_candidate_module(directory: str, entry: str, name: str):
+    """从物理或训练代码运行副本加载入口，并允许导入同目录的辅助模块。"""
+    root = Path(directory).resolve()
+    path = (root / entry).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("Module entry must stay inside its candidate")
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise ValueError(f"Cannot load source physics module: {path}")
+        raise ValueError(f"Cannot load candidate module: {path}")
     # 候选可以通过绝对模块名导入同一副本中的辅助模块。
-    sys.path.insert(0, str(source))
+    sys.path.insert(0, str(root))
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
@@ -50,7 +59,7 @@ def load_source_physics(source_dir: str, physics_path: str):
 
 
 def run_job(job: dict) -> dict:
-    """执行一个源回合；保存原始异常，清理失败也使报告 ok=false。"""
+    """执行一次源 rollout 或续训；保存原始异常，清理失败也使报告 ok=false。"""
     launcher = None
     adapter = None
     report = {"ok": False, "result": {}}
@@ -77,6 +86,8 @@ def run_job(job: dict) -> dict:
         from isaaclab.app import AppLauncher
 
         config = dict(job["adapter_config"])
+        if job["op"] == "train":
+            config["record_video"] = False
         launcher = AppLauncher(
             headless=True,
             enable_cameras=config.get("record_video", True),
@@ -85,8 +96,34 @@ def run_job(job: dict) -> dict:
         Adapter = load_adapter(job["adapter"])
         physics = load_source_physics(job["source_dir"], job["physics"])
         adapter = Adapter(config)
-        adapter.open(physics)
-        report["result"] = adapter.rollout(job["episode"], Path(job["output_dir"]))
+        if job["op"] == "train":
+            training = None
+
+            def configure_training(env_cfg, agent_cfg):
+                nonlocal training
+                # adapter 已准备好任务导入路径，此时训练代码可导入任务的奖励等实现。
+                training = _load_candidate_module(
+                    job["training_dir"], job.get("training", "train.py"),
+                    "_agenticsimulator_training",
+                )
+                training.configure(env_cfg, agent_cfg)
+                # 第一版统一每 100 次迭代保存 checkpoint，覆盖 configure 的设置。
+                agent_cfg.save_interval = 100
+
+            env, agent_cfg = adapter.open_training(
+                physics, num_envs=job.get("num_envs", 4096),
+                configure=configure_training,
+            )
+            report["result"] = training.train(
+                env=env,
+                agent_cfg=agent_cfg,
+                checkpoint=config["checkpoint"],
+                output_dir=Path(job["output_dir"]),
+                iterations=job["iterations"],
+            )
+        else:
+            adapter.open(physics)
+            report["result"] = adapter.rollout(job["episode"], Path(job["output_dir"]))
         report["ok"] = True
     except BaseException as exc:
         # 包括中断和候选代码提前退出；保留失败，不自动重跑。
@@ -98,7 +135,7 @@ def run_job(job: dict) -> dict:
                     adapter.close()
                 except BaseException as exc:
                     record_error(exc, "adapter_close")
-            # Kit 快速关闭可能直接结束进程，必须在关闭应用前保存回合报告。
+            # Kit 快速关闭可能直接结束进程，必须在关闭应用前保存执行报告。
             # worker 仍等待进程退出，并结合退出码判断执行状态。
             write_json(Path(job["report_path"]), report)
         finally:
@@ -136,8 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if job["environment"] != "source":
             raise ValueError("Source entry accepts only source jobs")
-        if job["op"] != "rollout":
-            raise ValueError("Source entry supports only rollout; source_probe is not implemented")
+        if job["op"] not in ("rollout", "train"):
+            raise ValueError("Source entry supports only rollout and train")
         # worker 在进程启动成功、预算登记完成后发送 start；EOF 不启动实验。
         if sys.stdin.readline().strip() != "start":
             raise RuntimeError("Source job cancelled before receiving start")

@@ -2,7 +2,7 @@
 """创建工作区，管理 Agent 与实验服务的生命周期。
 
 Agent 负责观察、推理和修改。
-session.py 负责处理实验请求，并委托执行器运行源/目标 rollout。
+session.py 负责处理实验请求，并委托执行器运行源/目标 rollout 或源环境续训。
 
 runner 可以理解为“整个运行的管理员”，大致按这个顺序工作：
 1. 创建工作区、日志和临时通信目录。
@@ -47,21 +47,29 @@ SESSION_SHUTDOWN_TIMEOUT = 30.0
 
 
 def create_workspace(cfg: dict, run: Path) -> Path:
-    """从模板创建工作区，将源候选与固定参考资料分开放置。"""
+    """从模板创建工作区，分别放置源候选、训练配方和固定参考资料。"""
     template = Path(cfg["workspace_template"]).expanduser().resolve()
     source = Path(cfg["source_root"]).expanduser().resolve()
+    # 任务目录采用 source/ 与 training/ 并列的结构。
+    training = source.parent / "training"
     workspace = run / "workspace"
 
     # 避免把输出目录递归复制进自身。
-    if run.is_relative_to(template) or run.is_relative_to(source):
-        raise ValueError("run-dir cannot be inside the template or source directory")
+    if any(run.is_relative_to(root) for root in (template, source, training)):
+        raise ValueError("run-dir cannot be inside the template, source or training directory")
 
-    # 各次运行都从独立副本开始，Agent 修改 workspace/source 不会改到原始源码。
+    # 各次运行都从独立副本开始，Agent 修改源实现或训练配方不会改到原始源码。
     # copytree 默认拒绝覆盖已有目标目录，避免把两次运行内容混在一起。
     shutil.copytree(template, workspace)
     shutil.copytree(
         source,
         workspace / "source",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"),
+    )
+    # 初始配方可直接沿用；Agent 按需修改，worker 在每轮训练时单独归档。
+    shutil.copytree(
+        training,
+        workspace / "training",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"),
     )
     # 将复制出的参考资料移到工作区顶层，随后单独只读挂载。
@@ -96,6 +104,12 @@ def agent_command(
             "Read instruction.md and tools.md. "
             "Source-environment reference files are read-only in reference/; "
             "edit source/ to change physics. "
+            "After calibration, continue policy training in the selected calibrated environment. "
+            "training/ contains the initial training recipe. You may reuse it unchanged "
+            "or modify rewards, curricula and training code when the feedback warrants it. "
+            "Keep the task goal and success checks fixed. "
+            "Each training request continues from the latest checkpoint. "
+            "Decide whether to train again, inspect behavior with a rollout, or finish. "
             "Use scripts/env.py to interact with the experiment service. "
             "Work autonomously toward the task described in instruction.md."
         ),
@@ -128,7 +142,7 @@ def agent_command(
         ),
     ]
 
-    # source/ 和 scratch/ 可写。
+    # source/、training/ 和 scratch/ 可写。
     # 指令、客户端、参考资料和原始反馈由宿主管理。
     # 在整体可写的 workspace 挂载上，再覆盖这些路径为只读。
     # 宿主仍可更新 observations，Agent 能读取更新后的内容。
@@ -200,6 +214,7 @@ def supervise(
     """持续监控服务和 Agent，返回结束原因及已启动的 Agent 进程。
 
     start_agent 是启动回调，等到 ready 才调用，以免 Agent 抢先连接未就绪服务。
+    executing 事件的 timeout 为 None 时不设请求截止时间，仍等待 idle 确认请求收尾。
     本函数判断何时停止监控，实际终止进程由 run_session 的 finally 统一负责。
     """
     agent = None
@@ -207,6 +222,8 @@ def supervise(
     buffer = bytearray()
     pipe_open = True
     ready = False
+    # 无时限的训练也处于执行中，不能用是否有截止时间判断请求状态。
+    executing = False
 
     # monotonic 是只向前走的计时器，不受系统时钟校准影响，适合计算超时。
     # 服务清理单独计时，避免 Agent 的总运行时限截断正常清理。
@@ -250,17 +267,22 @@ def supervise(
                             agent_deadline = time.monotonic() + timeout
 
                     elif kind == "executing":
-                        # 留出少量收尾时间，服务端仍应自行实施执行时限。
+                        executing = True
+                        request_timeout = event["timeout"]
+                        # 有时限时留出少量收尾时间；null 表示不设置请求时限。
                         execution_deadline = (
-                            time.monotonic() + float(event["timeout"]) + 10
+                            None if request_timeout is None
+                            else time.monotonic() + float(request_timeout) + 10
                         )
 
                     elif kind == "idle":
                         # 整次请求已收尾，取消该请求的外层超时监控。
+                        executing = False
                         execution_deadline = None
 
                     elif kind == "finished":
                         # 服务已完成清理，但仍须等进程正常退出并核对磁盘状态。
+                        executing = False
                         execution_deadline = None
         else:
             time.sleep(0.2)
@@ -285,8 +307,8 @@ def supervise(
 
         if agent is not None and agent.poll() is not None:
             # Agent 退出并不代表已经提交的实验被取消。
-            # 若仍有 executing 时限，继续等待实验收尾。
-            if execution_deadline is None:
+            # 包括无时限训练在内，执行中的请求都继续等待收尾。
+            if not executing:
                 if not _session_finished(run):
                     return "agent_exited", agent
 

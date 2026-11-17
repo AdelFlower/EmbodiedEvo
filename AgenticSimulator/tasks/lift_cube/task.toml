@@ -1,11 +1,12 @@
-# 本任务的唯一人工配置；项目内路径相对于本文件，source.physics 除外。
+# 本任务的唯一人工配置；项目内路径相对于本文件，候选内入口除外（见对应字段注释）。
 # Python 解释器默认沿用启动环境，不保存本机绝对路径。
 workspace_template = "../../Workspace"
 source_root = "source"
+# runner 将与 source/ 并列的 training/ 复制到工作区，作为可沿用或修改的训练配方。
 
 [task]
 name = "lift_cube"
-description = "根据固定 policy 在目标环境中的表现，校准源仿真器的物理实现。"
+description = "使用 P0 校准源仿真器，在固定校准环境中续训以恢复 P0 在初始源环境中的表现，并检查固定目标环境中的迁移效果。"
 
 [agent]
 preset = "codex"
@@ -19,13 +20,16 @@ memory_mb = 8192
 
 [session]
 startup_timeout_sec = 120
-# 一次请求的总时限，包括准备、等待 GPU、请求中的各侧执行及反馈发布。
+# 一次 rollout 请求的总时限，包括准备、等待 GPU、各侧执行及反馈发布；双侧共用。
+# 当前为 20 分钟。训练不设单次请求时限，以完成 1000 iterations 为正常结束条件。
 execution_timeout_sec = 1200
 # 暂定每侧各 100 次；按子进程实际启动计数，启动后的失败也计入。
+# source 预算由源 rollout 和训练共用，每轮训练消耗一次，与并行环境数量无关。
 # 删除某侧 budget 字段表示不限制次数，0 表示不允许启动该侧。
 source_budget = 100
 target_budget = 100
 # 不填写 timeout_sec 表示不设会话总时限；需要时填写正数，单位为秒。
+# 若设置，会限制 Agent 启动后的整段会话，包括等待 rollout 和训练的时间。
 
 [experiment]
 adapter = "AgenticSimulator.tasks.lift_cube.adapter:LiftCubeAdapter"
@@ -33,8 +37,13 @@ gpus = [0]
 per_gpu = 1
 
 [experiment.policies.default]
+# 初始策略 P0；后续策略由宿主在会话中登记，训练始终从最新 checkpoint 继续。
 checkpoint = "policy/model.pt"
 params_dir = "policy/params"
+
+[experiment.training]
+# 相对于 worker 为本轮训练准备的 training/ 代码快照目录。
+entry = "train.py"
 
 # 数组下标即 episode_id；第一项是 episode_id = 0，两侧使用同一回合配置。
 # 本任务暂不需要额外回合字段，保留空表供 episode_id = 0 选择。
@@ -57,6 +66,6 @@ physics = "target/physics.py"
 record_video = true
 
 [experiment.target_feedback]
-# 目标侧只公开这些字段及文件；源侧公开完整实验结果和诊断。
+# 目标侧只公开这些字段及文件；源侧按 rollout 或训练发布结果、日志和诊断。
 fields = ["steps", "step_dt"]
 artifacts = ["videos.overview", "videos.wrist"]

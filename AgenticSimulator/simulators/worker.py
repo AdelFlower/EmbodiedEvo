@@ -19,7 +19,14 @@ target.physics 和可选 gpu_lock_dir 等宿主路径以此为基准，不以运
 子进程先等待 stdin 的一行 start，再初始化模拟器及执行实验；EOF 表示取消。
 宿主创建进程成功后登记 on_start，再发送 start，创建进程失败不扣实验预算。
 JOB 只含本侧配置、adapter、回合描述、设备、output_dir 和 report_path。
-source 另外收到独立的 source_dir。
+source 另外收到独立的 source_dir；train 还收到 training_dir、training、
+iterations 和 num_envs（默认 4096）。首次 train 请求需指定 candidate_id，
+之后固定该物理候选，每轮从最新策略续训。rollout 的 policy_id=latest 表示
+最新策略，default 仍表示原始 P0，新策略编号为 p000001、p000002 等。
+训练代码使用独立 CandidateStore 归档；training-state.json 保存候选、策略链
+和最新策略位置，仅记录当前会话，不提供跨会话恢复。
+session 传入 timeout_sec=None 时，等待 GPU、执行和反馈发布均不设请求时限；
+训练使用此模式，等待子进程完成或报错。rollout 继续使用传入的有限时限。
 子进程将 adapter 输出写入 output_dir，向 report_path 写入：
     {"ok": true, "result": <adapter 返回字典>}
 预期实验失败使用 ok=false，可在 error 中保存诊断，已有 result 仍保留。
@@ -27,7 +34,7 @@ result.artifacts 是嵌套的路径字典，所有文件路径相对于 output_d
 退出码、日志和 report 同时保存；缺失报告、超时或崩溃不自动归因为基础设施故障。
 
 第一版顺序执行两侧。候选捕获依赖客户端串行提交：请求期间不得在后台改写
-source，尚未接入容器冻结。子进程配置分侧传递，但普通宿主进程
+source 或 training，尚未接入容器冻结。子进程配置分侧传递，但普通宿主进程
 本身不是文件访问隔离；源入口执行 Agent 代码前仍需落实目标私有数据访问边界。
 """
 
@@ -50,6 +57,10 @@ from AgenticSimulator.orchestrator.session_runner import stop_process
 
 
 IMPORT_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_RESULT_FIELDS = (
+    "op", "candidate_id", "training_candidate_id", "policy_id", "parent_policy_id",
+    "latest_policy_id", "returncode", "diagnostic",
+)
 
 
 def create_executor(*, cfg: dict, run: Path):
@@ -67,6 +78,12 @@ class ExperimentExecutor:
         python_path = self.settings.get("python")
         self.python = self._path(python_path) if python_path is not None else Path(sys.executable)
         self.candidates = CandidateStore(self.run / "candidates")
+        self.training_candidates = CandidateStore(self.run / "training-candidates")
+        self.training_state = {
+            "candidate_id": None,
+            "latest_policy_id": "default",
+            "policies": {},
+        }
         lock_dir = self.settings.get("gpu_lock_dir")
         self.slots = GpuSlots(
             self.settings["gpus"], self.settings.get("per_gpu", 1),
@@ -86,12 +103,23 @@ class ExperimentExecutor:
         path = Path(value).expanduser()
         return (path if path.is_absolute() else self.base / path).resolve()
 
+    def _policy(self, policy_id: str) -> dict:
+        """解析原始策略或本会话训练产生的策略，不把登记信息传给 adapter。"""
+        if policy_id in self.training_state["policies"]:
+            record = self.training_state["policies"][policy_id]
+            return {key: record[key] for key in ("checkpoint", "params_dir")}
+        policy = copy.deepcopy(self.settings["policies"][policy_id])
+        for name in ("checkpoint", "params_dir"):
+            if name in policy:
+                policy[name] = str(self._path(policy[name]))
+        return policy
+
     def execute(
         self, request: dict, *, request_id: str, private_dir: Path,
-        public_dir: Path, timeout_sec: float, on_start,
+        public_dir: Path, timeout_sec: float | None, on_start,
     ) -> dict:
-        """一次请求共用截止时间；一侧实验失败不丢弃另一侧结果。"""
-        deadline = time.monotonic() + timeout_sec
+        """有时限的请求共用截止时间，None 表示不限时；保留各侧实验结果。"""
+        deadline = None if timeout_sec is None else time.monotonic() + timeout_sec
         private_dir = Path(private_dir)
         private_dir.mkdir(parents=True, exist_ok=False)
         jobs = self._prepare_request(request, request_id, private_dir)
@@ -103,8 +131,22 @@ class ExperimentExecutor:
                           "diagnostic": job["preparation_error"], "result": {}}
             else:
                 result = self._run_one(side, job, side_private, deadline, on_start)
-            if "candidate_id" in job:
-                result["candidate_id"] = job["candidate_id"]
+            result["op"] = job["op"]
+            for key in ("candidate_id", "training_candidate_id", "policy_id"):
+                if key in job:
+                    result[key] = job[key]
+            if job["op"] == "train":
+                result["parent_policy_id"] = result.pop("policy_id", None)
+                if result["ok"]:
+                    try:
+                        result["policy_id"] = self._register_policy(job, result["result"])
+                    except (KeyError, TypeError, OSError, ValueError):
+                        result.update(
+                            ok=False, error="policy_registration_failed",
+                            diagnostic=traceback.format_exc(),
+                        )
+            if side == "source":
+                result["latest_policy_id"] = self.training_state["latest_policy_id"]
             write_json(side_private / "execution.json", result)
             try:
                 results[side] = self._publish_result(
@@ -116,9 +158,10 @@ class ExperimentExecutor:
                 (side_private / "publication-error.txt").write_text(detail, encoding="utf-8")
                 published = {"ok": False, "error": "publication_failed"}
                 if side == "source":
+                    for key in SOURCE_RESULT_FIELDS:
+                        if key in result:
+                            published[key] = result[key]
                     published["diagnostic"] = str(exc)
-                    if "candidate_id" in result:
-                        published["candidate_id"] = result["candidate_id"]
                 results[side] = published
             write_json(Path(public_dir) / side / "result.json", results[side])
         return {"ok": all(item["ok"] for item in results.values()), "results": results}
@@ -126,14 +169,12 @@ class ExperimentExecutor:
     def _prepare_request(self, request, request_id, private_dir):
         """解析宿主配置，固定源代码；每侧只收到自己需要的配置。"""
         op = request["op"]
-        # source_probe 暂停接入。
-        # sides = ["source"] if op == "source_probe" else request["environments"]
-        # if op not in ("rollout", "source_probe"):
-        if op != "rollout":
+        if op not in ("rollout", "train"):
             raise ValueError(f"Unsupported experiment operation: {op}")
-        sides = request["environments"]
-        policy_id = request.get("policy_id", "default")
-        episode_id = request["episode_id"]
+        sides = ["source"] if op == "train" else request["environments"]
+        policy_id = request.get("policy_id", "latest")
+        if op == "train" or policy_id == "latest":
+            policy_id = self.training_state["latest_policy_id"]
         jobs = {}
         for side in sides:
             directory = private_dir / side
@@ -141,44 +182,75 @@ class ExperimentExecutor:
             job = {"op": op, "environment": side, "request_id": request_id}
             jobs[side] = job
             try:
-                policy = copy.deepcopy(self.settings["policies"][policy_id])
-                for name in ("checkpoint", "params_dir"):
-                    if name in policy:
-                        policy[name] = str(self._path(policy[name]))
-                episode = copy.deepcopy(self.settings["episodes"][episode_id])
-                episode["episode_id"] = episode_id
-                # 种子由 session 为本次请求确定，两侧共用，不沿用任务配置中的旧值。
-                episode["seed"] = request["seed"]
+                policy = self._policy(policy_id)
                 settings = self.settings[side]
                 adapter_config = {**settings.get("adapter_config", {}), **policy}
                 job.update(
                     adapter=self.adapter, adapter_config=adapter_config,
-                    policy_id=policy_id, episode=episode,
+                    policy_id=policy_id,
                     output_dir=str(directory / "output"),
                     report_path=str(directory / "report.json"),
                 )
+                candidate_id = self.training_state["candidate_id"]
+                if op == "train":
+                    if request.get("policy_id", "latest") not in ("latest", policy_id):
+                        raise ValueError("Training must continue from the latest policy")
+                    requested_candidate = request.get("candidate_id", candidate_id)
+                    if requested_candidate is None:
+                        raise ValueError("The first train request requires candidate_id")
+                    if candidate_id is not None and requested_candidate != candidate_id:
+                        raise ValueError("The calibrated candidate is fixed during training")
+                    candidate_id = requested_candidate
+                    iterations = request["iterations"]
+                    num_envs = request.get("num_envs", 4096)
+                    if type(iterations) is not int or iterations < 1:
+                        raise ValueError("iterations must be a positive integer")
+                    if type(num_envs) is not int or num_envs < 1:
+                        raise ValueError("num_envs must be a positive integer")
+                    adapter_config["record_video"] = False
+                    job.update(iterations=iterations, num_envs=num_envs)
+                else:
+                    episode_id = request["episode_id"]
+                    episode = copy.deepcopy(self.settings["episodes"][episode_id])
+                    episode["episode_id"] = episode_id
+                    # 两侧复用 session 为本次 rollout 确定的种子。
+                    episode["seed"] = request["seed"]
+                    job["episode"] = episode
+
                 if side == "source":
-                    candidate = self.candidates.capture(
-                        self.workspace / "source", request_id=request_id,
-                    )
-                    job["candidate_id"] = candidate["candidate_id"]
+                    if candidate_id is None:
+                        candidate = self.candidates.capture(
+                            self.workspace / "source", request_id=request_id,
+                        )
+                        candidate_id = candidate["candidate_id"]
+                    job["candidate_id"] = candidate_id
                     source = directory / "source"
-                    shutil.copytree(self.candidates.source_path(candidate["candidate_id"]), source)
+                    shutil.copytree(self.candidates.source_path(candidate_id), source)
                     job["source_dir"] = str(source)
                     physics = (source / settings["physics"]).resolve()
                     if not physics.is_relative_to(source.resolve()):
                         raise ValueError("Source physics must stay inside the candidate")
                     job["physics"] = str(physics)
-                    # if op == "source_probe":
-                    #     script = (self.workspace / request["script_path"]).resolve()
-                    #     if not script.is_relative_to(self.workspace) or not script.is_file():
-                    #         raise ValueError("Probe must be a file inside the workspace")
-                    #     saved_script = directory / "probe.py"
-                    #     saved_script.write_bytes(script.read_bytes())
-                    #     job["script_path"] = str(saved_script)
                 else:
                     physics = settings.get("physics")
                     job["physics"] = str(self._path(physics)) if physics is not None else None
+
+                if op == "train":
+                    training = self.training_candidates.capture(
+                        self.workspace / "training", request_id=request_id,
+                    )
+                    job["training_candidate_id"] = training["candidate_id"]
+                    training_dir = directory / "training"
+                    shutil.copytree(
+                        self.training_candidates.source_path(training["candidate_id"]),
+                        training_dir,
+                    )
+                    job["training_dir"] = str(training_dir)
+                    job["training"] = self.settings.get("training", {}).get("entry", "train.py")
+                    if self.training_state["candidate_id"] is None:
+                        state = {**self.training_state, "candidate_id": candidate_id}
+                        write_json(self.run / "training-state.json", state)
+                        self.training_state = state
             except (KeyError, IndexError, OSError, ValueError):
                 job["preparation_error"] = traceback.format_exc()
                 (directory / "preparation-error.txt").write_text(
@@ -186,17 +258,50 @@ class ExperimentExecutor:
                 )
         return jobs
 
+    def _register_policy(self, job: dict, raw: dict) -> str:
+        """登记成功训练的最后 checkpoint；保存登记后才推进最新策略。"""
+        output = Path(job["output_dir"]).resolve()
+        checkpoint = (output / raw["checkpoint"]).resolve()
+        params = (output / raw["params_dir"]).resolve()
+        for path in (checkpoint, params / "env.yaml", params / "agent.yaml"):
+            path = path.resolve()
+            if not path.is_relative_to(output) or not path.is_file():
+                raise ValueError("Policy files must exist inside the training output directory")
+
+        policies = self.training_state["policies"]
+        policy_id = f"p{len(policies) + 1:06d}"
+        if policy_id in self.settings["policies"]:
+            raise ValueError(f"Trained policy ID conflicts with a configured policy: {policy_id}")
+        record = {
+            "checkpoint": str(checkpoint),
+            "params_dir": str(params),
+            "parent_policy_id": job["policy_id"],
+            "candidate_id": job["candidate_id"],
+            "training_candidate_id": job["training_candidate_id"],
+            "request_id": job["request_id"],
+            "iterations": job["iterations"],
+            "num_envs": job["num_envs"],
+        }
+        state = {
+            **self.training_state,
+            "latest_policy_id": policy_id,
+            "policies": {**policies, policy_id: record},
+        }
+        write_json(self.run / "training-state.json", state)
+        self.training_state = state
+        return policy_id
+
     def _run_one(self, environment, job, private_dir, deadline, on_start):
         """等待资源并运行一侧；进程停止后才能释放 GPU 槽位。"""
         result = {"ok": False, "result": {}}
         try:
             while self.lease is None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
                     return {**result, "error": "request_timeout"}
                 self.lease = self.slots.acquire()
                 if self.lease is None:
-                    time.sleep(min(0.2, remaining))
+                    time.sleep(0.2 if remaining is None else min(0.2, remaining))
 
             job["adapter_config"]["device"] = "cuda:0"
             job["gpu"] = self.lease.gpu
@@ -210,7 +315,7 @@ class ExperimentExecutor:
                 f"AgenticSimulator.simulators.{environment}",
                 "--run-dir", str(self.run), "--job", str(job_path),
             ]
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 return {**result, "error": "request_timeout"}
             with (
                 (private_dir / "stdout.log").open("w", encoding="utf-8") as stdout,
@@ -239,7 +344,9 @@ class ExperimentExecutor:
                     except BrokenPipeError:
                         pass
                 try:
-                    returncode = self.process.wait(timeout=max(0.0, deadline - time.monotonic()))
+                    # Popen.wait(timeout=None) 等待进程退出，训练报错也会正常结束等待。
+                    remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                    returncode = self.process.wait(timeout=remaining)
                 except subprocess.TimeoutExpired:
                     return {**result, "error": "request_timeout"}
 
@@ -267,15 +374,21 @@ class ExperimentExecutor:
         """先选公开内容再复制文件；目标侧不复制完整报告、轨迹或日志。"""
         public_dir.mkdir(parents=True, exist_ok=False)
         raw = result.get("result", {})
+        training = result.get("op") == "train"
         if environment == "source":
-            published = {key: value for key, value in raw.items() if key != "artifacts"}
-            for key in ("candidate_id", "returncode", "diagnostic"):
+            private_fields = {"artifacts"}
+            if training:
+                private_fields.update(("checkpoint", "parent_checkpoint", "params_dir", "log_dir"))
+            published = {key: value for key, value in raw.items() if key not in private_fields}
+            for key in SOURCE_RESULT_FIELDS:
                 if key in result:
                     published[key] = result[key]
         else:
             published = {
                 key: raw[key] for key in self.feedback.get("fields", []) if key in raw
             }
+            if "policy_id" in result:
+                published["policy_id"] = result["policy_id"]
         published["ok"] = result["ok"]
         if not result["ok"]:
             # 这里只公开执行器自己的错误码，不透传目标进程 error/traceback。
@@ -297,7 +410,7 @@ class ExperimentExecutor:
                     continue
                 if environment == "target" and ".".join(parts) not in self.feedback.get("artifacts", []):
                     continue
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     raise TimeoutError("Request deadline reached while publishing artifacts")
                 if not isinstance(value, str):
                     raise ValueError("Artifact path must be a string")
@@ -310,7 +423,21 @@ class ExperimentExecutor:
                 shutil.copyfile(path, destination_path)
                 destination[key] = str(destination_path.relative_to(self.workspace))
 
-        publish_files(raw.get("artifacts", {}), artifacts)
+        files = raw.get("artifacts", {})
+        if training:
+            # 模型留在宿主；公开配置和原始 TensorBoard 日志供 Agent 分析。
+            files = {
+                "params": {
+                    name: f"params/{name}.yaml" for name in ("env", "agent")
+                    if (output / "params" / f"{name}.yaml").is_file()
+                },
+                "tensorboard": {
+                    str(index): str(path.relative_to(output))
+                    for index, path in enumerate(sorted(output.rglob("events.out.tfevents.*")))
+                    if path.is_file()
+                },
+            }
+        publish_files(files, artifacts)
         if environment == "source":
             logs = {}
             for name in ("stdout.log", "stderr.log", "preparation-error.txt"):
@@ -323,6 +450,9 @@ class ExperimentExecutor:
         return published
 
     def select_candidate(self, candidate_id: str) -> bool:
+        calibrated = self.training_state["candidate_id"]
+        if calibrated is not None and candidate_id != calibrated:
+            return False
         return self.candidates.select(candidate_id)
 
     def _stop_active(self) -> None:
