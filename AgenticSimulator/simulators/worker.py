@@ -23,8 +23,8 @@ params/env.yaml，checkpoint 和 agent.yaml 则来自所选策略。源侧在固
 宿主创建进程成功后登记 on_start，再发送 start，创建进程失败不扣实验预算。
 JOB 只含本侧配置、adapter、回合描述、设备、output_dir 和 report_path。
 source 另外收到独立的 source_dir；train 还收到 training_dir、training、
-iterations 和 num_envs（默认 4096）。首次 train 请求需指定 candidate_id，
-之后固定该物理候选，每轮从最新策略续训。rollout 的 policy_id=latest 表示
+iterations 和 num_envs（默认 4096）。每次源 rollout 归档当前工作区的 source/。
+每轮 train 使用请求指定的已归档物理候选，从最新策略续训。rollout 的 policy_id=latest 表示
 最新策略，default 仍表示原始 P0，新策略编号为 p000001、p000002 等。
 训练代码使用独立 CandidateStore 归档；training-state.json 保存候选、策略链
 和最新策略位置，仅记录当前会话，不提供跨会话恢复。
@@ -201,16 +201,9 @@ class ExperimentExecutor:
                     output_dir=str(directory / "output"),
                     report_path=str(directory / "report.json"),
                 )
-                candidate_id = self.training_state["candidate_id"]
                 if op == "train":
                     if request.get("policy_id", "latest") not in ("latest", policy_id):
                         raise ValueError("Training must continue from the latest policy")
-                    requested_candidate = request.get("candidate_id", candidate_id)
-                    if requested_candidate is None:
-                        raise ValueError("The first train request requires candidate_id")
-                    if candidate_id is not None and requested_candidate != candidate_id:
-                        raise ValueError("The calibrated candidate is fixed during training")
-                    candidate_id = requested_candidate
                     iterations = request["iterations"]
                     num_envs = request.get("num_envs", 4096)
                     if type(iterations) is not int or iterations < 1:
@@ -228,11 +221,13 @@ class ExperimentExecutor:
                     job["episode"] = episode
 
                 if side == "source":
-                    if candidate_id is None:
+                    if op == "rollout":
                         candidate = self.candidates.capture(
                             self.workspace / "source", request_id=request_id,
                         )
                         candidate_id = candidate["candidate_id"]
+                    else:
+                        candidate_id = request["candidate_id"]
                     job["candidate_id"] = candidate_id
                     source = directory / "source"
                     shutil.copytree(self.candidates.source_path(candidate_id), source)
@@ -257,10 +252,6 @@ class ExperimentExecutor:
                     )
                     job["training_dir"] = str(training_dir)
                     job["training"] = self.settings.get("training", {}).get("entry", "train.py")
-                    if self.training_state["candidate_id"] is None:
-                        state = {**self.training_state, "candidate_id": candidate_id}
-                        write_json(self.run / "training-state.json", state)
-                        self.training_state = state
             except (KeyError, IndexError, OSError, ValueError):
                 job["preparation_error"] = traceback.format_exc()
                 (directory / "preparation-error.txt").write_text(
@@ -294,6 +285,7 @@ class ExperimentExecutor:
         }
         state = {
             **self.training_state,
+            "candidate_id": job["candidate_id"],
             "latest_policy_id": policy_id,
             "policies": {**policies, policy_id: record},
         }
@@ -460,8 +452,8 @@ class ExperimentExecutor:
         return published
 
     def select_candidate(self, candidate_id: str) -> bool:
-        calibrated = self.training_state["candidate_id"]
-        if calibrated is not None and candidate_id != calibrated:
+        latest_policy_candidate = self.training_state["candidate_id"]
+        if latest_policy_candidate is not None and candidate_id != latest_policy_candidate:
             return False
         return self.candidates.select(candidate_id)
 

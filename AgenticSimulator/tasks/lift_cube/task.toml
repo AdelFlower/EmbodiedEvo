@@ -6,7 +6,7 @@ source_root = "source"
 
 [task]
 name = "lift_cube"
-description = "使用 P0 校准源仿真器，在固定校准环境中续训以恢复 P0 在初始源环境中的表现，并检查固定目标环境中的迁移效果。"
+description = "从 P0 开始观察源、目标环境的行为差异。每次修改源物理参数后，用当前策略观察修改效果，在该版本上从最新 checkpoint 续训一轮。根据新策略在固定目标环境中的 rollout 表现判断是否达标，达标则结束，否则提出下一轮修改。"
 
 [agent]
 preset = "codex"

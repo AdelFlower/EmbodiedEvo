@@ -21,7 +21,7 @@ rollout 使用配置中的请求时限；train 不设请求时限，等待训练
 阅读时可以先记住几个词：
 - source 是 Agent 可修改的源仿真器，target 是用于对照的目标环境。
 - rollout 是按指定 policy（控制策略）运行实验。
-- train 是从最新策略继续学习；首次请求指定校准候选，之后固定使用该候选。
+- train 使用本轮指定的源候选，从最新策略续训。省略候选编号时沿用最近成功登记策略的候选。
 - executor 是实际运行实验的对象，本文件通过约定的接口调用它。
 - 回调是“传给另一段代码、由它在约定时机调用的函数”，例如 on_start。
 - “落盘”就是把当前信息写进文件，避免信息只留在进程内存里。
@@ -63,6 +63,7 @@ class ExperimentExecutor(Protocol):
     execute/select_candidate/close 方法。此处的省略号不是实验实现，也不会自动运行仿真。
 
     training_state 由执行器维护，包含 candidate_id、latest_policy_id 和 policies。
+    candidate_id 表示训练出最新策略的源候选，首轮策略成功登记前为 None。
     policies 是已成功登记的策略表，其中包含宿主路径；会话层只公开候选编号、
     最新策略编号和完成轮数，不直接向 Agent 返回该表。
 
@@ -209,9 +210,11 @@ class Session:
             "protocol": SESSION_PROTOCOL,
             "closed": self.closed,
             "reason": self.reason,
+            # phase 和 calibrated_candidate 供已有客户端读取。
             "phase": "training" if training["candidate_id"] is not None else "calibration",
             "calibrated_candidate": training["candidate_id"],
             "latest_policy_id": training["latest_policy_id"],
+            "latest_policy_candidate": training["candidate_id"],
             "training_rounds_completed": len(training["policies"]),
             "training_iterations_per_request": TRAINING_ITERATIONS,
             "training_num_envs_default": DEFAULT_TRAINING_NUM_ENVS,
@@ -309,14 +312,12 @@ class Session:
 
     def handle_train(self, request: dict) -> dict:
         """准备一轮固定训练量的续训请求，只消耗一次源侧实验预算。"""
-        calibrated = self.executor.training_state["candidate_id"]
-        candidate_id = request.get("candidate_id", calibrated)
+        latest_policy_candidate = self.executor.training_state["candidate_id"]
+        candidate_id = request.get("candidate_id", latest_policy_candidate)
         if candidate_id is None:
             raise RequestError("The first train request requires candidate_id")
         if not isinstance(candidate_id, str) or not candidate_id:
             raise RequestError("candidate_id must be a nonempty string")
-        if calibrated is not None and candidate_id != calibrated:
-            raise RequestError("The calibrated candidate is fixed during training")
 
         num_envs = request.get("num_envs", DEFAULT_TRAINING_NUM_ENVS)
         if type(num_envs) is not int or num_envs < 1:
@@ -512,18 +513,21 @@ class Session:
         return response
 
     def finish(self, candidate_id: str | None) -> dict:
-        """记录最终候选及最新策略；允许在任意一轮训练结束后提交。"""
+        """已有续训策略时，提交最新策略及训练该策略的源候选。"""
         training = self.executor.training_state
-        calibrated = training["candidate_id"]
+        latest_policy_candidate = training["candidate_id"]
         if candidate_id is None:
-            candidate_id = calibrated
+            candidate_id = latest_policy_candidate
 
         # 先交给执行器确认并记录候选；选择失败时不关闭当前会话。
         if candidate_id is not None:
             if not isinstance(candidate_id, str) or not candidate_id:
                 raise RequestError("candidate_id must be a nonempty string")
-            if calibrated is not None and candidate_id != calibrated:
-                raise RequestError("Finish must use the fixed calibrated candidate")
+            if latest_policy_candidate is not None and candidate_id != latest_policy_candidate:
+                raise RequestError(
+                    f"Policy {training['latest_policy_id']} was trained with candidate "
+                    f"{latest_policy_candidate}. Use that candidate to finish."
+                )
 
             if not self.executor.select_candidate(candidate_id):
                 raise RequestError("Unknown source candidate")

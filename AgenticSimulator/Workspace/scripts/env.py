@@ -58,9 +58,22 @@ def main(argv=None):
     """解析命令；服务返回 ok=true 时退出码为 0，否则为 1。"""
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("status", help="查询会话状态和剩余预算，不运行实验")
+    sub.add_parser(
+        "status", help="查询最新策略、对应的训练候选和剩余预算",
+        description=(
+            "latest_policy_id 是最新策略编号，latest_policy_candidate 是训练出它的源环境候选编号。"
+            "首轮策略成功登记前，两者分别为 default（P0）和 null。查询状态不消耗实验预算。"
+        ),
+    )
 
-    rollout = sub.add_parser("rollout", help="使用指定策略运行源环境、目标环境或两侧，默认最新策略")
+    rollout = sub.add_parser(
+        "rollout", help="用指定策略探测当前源环境、固定目标环境或两侧",
+        description=(
+            "rollout 只做探测，默认使用最新策略。source 使用本次请求时工作区里的 source/，"
+            "并在 results.source.candidate_id 中返回这份物理代码的编号。"
+            "target 使用固定目标环境，可用于判断最新策略是否达标。"
+        ),
+    )
     rollout.add_argument(
         "--environments", nargs="+", choices=("source", "target"), required=True,
         help="要执行的环境，可填写 source target；每侧最多出现一次",
@@ -76,26 +89,32 @@ def main(argv=None):
     )
 
     train = sub.add_parser(
-        "train", help="在校准环境中从最新 checkpoint 续训一轮",
+        "train", help="在本轮源环境候选上从最新 checkpoint 续训一轮",
         description=(
             "使用 training/ 中的配方续训，可沿用原配方或按需修改。"
-            "每次固定训练 1000 iterations，每 100 iterations 保存 checkpoint；"
-            "不自动执行评价 rollout。"
+            "每次从最新 checkpoint 续训 1000 次迭代，每 100 次迭代保存 checkpoint。"
+            "训练后可单独调用 rollout 观察新策略。"
         ),
     )
     train.add_argument(
         "--candidate-id",
-        help="首次训练必须指定源实验返回的校准候选编号；后续省略以沿用固定候选",
+        help=(
+            "首次训练必须传入源侧 rollout 返回的候选编号。修改源物理参数后，传入本次观察得到的新编号。"
+            "省略时沿用训练出最新策略的候选，可通过 status 的 latest_policy_candidate 查看。"
+        ),
     )
     train.add_argument(
         "--num-envs", type=int,
         help="并行环境数量；省略时使用宿主默认值 4096",
     )
 
-    finish = sub.add_parser("finish", help="提交最终候选与最新策略并结束会话")
+    finish = sub.add_parser("finish", help="结束会话，默认提交最新续训策略及对应的源环境候选")
     finish.add_argument(
         "--candidate-id",
-        help="源实验返回的候选编号；续训阶段省略则提交固定校准候选，校准阶段省略则不选择候选",
+        help=(
+            "已有续训策略时，省略即提交最新策略及其训练候选，显式传入的编号须与该候选一致。"
+            "首轮策略成功登记前，可指定已归档的源候选与 P0 一起提交，也可省略编号直接结束。"
+        ),
     )
 
     args = parser.parse_args(argv)

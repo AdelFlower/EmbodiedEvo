@@ -47,9 +47,10 @@ python scripts/env.py status
 | --- | --- |
 | `ok` | 请求是否正常处理 |
 | `closed`、`reason` | 会话是否已关闭及当前状态原因 |
-| `phase` | `calibration` 或 `training`；首次训练准备完成、候选固定后进入 `training` |
-| `calibrated_candidate` | 固定的校准候选编号；尚未固定时为 `null` |
-| `latest_policy_id` | 最新成功登记的策略编号；尚无新策略时为 `default`（P0） |
+| `phase` | 兼容字段。首轮策略成功登记前为 `calibration`，登记后为 `training` |
+| `calibrated_candidate` | `latest_policy_candidate` 的兼容字段，两者取值相同 |
+| `latest_policy_id` | 最新成功登记的策略编号，初始为 `default`（P0） |
+| `latest_policy_candidate` | 训练出最新策略的源物理候选编号，首轮策略成功登记前为 `null` |
 | `training_rounds_completed` | 已成功训练并登记策略的轮数，不含 P0 |
 | `training_iterations_per_request` | 每轮新增训练量，当前固定为 1000 iterations |
 | `training_num_envs_default` | 默认并行环境数量，当前为 4096 |
@@ -62,8 +63,8 @@ python scripts/env.py status
 | `final_policy_id` | 最终提交的策略编号；尚未提交或无候选提交时为 `null` |
 
 开始工作及决定下一次实验前，使用状态中的实时计数安排预算。
-`phase=training` 表示已固定校准候选，不代表已经成功训练一轮；完成情况看
-`training_rounds_completed`。会话是否结束看 `closed`，阶段字段不会变为 `finished`。
+看 `training_rounds_completed` 了解已成功登记的轮数，看 `closed` 判断会话是否结束。
+源侧探测返回的候选编号属于本次 rollout。只有新策略成功登记后，状态中的策略与训练候选才会一起更新。
 
 ## rollout：使用指定策略观察表现
 
@@ -79,7 +80,7 @@ python scripts/env.py rollout --environments source
 python scripts/env.py rollout --environments target
 ```
 
-校准阶段使用 P0，在一次请求中分别运行两侧：
+开始时可用 P0 在一次请求中分别运行两侧：
 
 ```bash
 python scripts/env.py rollout --environments source target --policy-id default --episode-id 0
@@ -96,12 +97,11 @@ python scripts/env.py rollout --environments source target --policy-id default -
 初始策略和回合条目由宿主任务配置决定，新策略在本会话训练成功后登记。
 同一策略编号可用于源侧或目标侧 rollout；历史策略可用于对照，续训始终使用最新策略。
 
-切换策略时，环境与策略分别加载：两侧环境均从宿主固定的 P0 `env.yaml` 开始，
-源侧应用当前候选的 `physics.py`，目标侧应用宿主固定的目标物理实现；网络配置
-从所选策略的 `agent.yaml` 读取，权重和观测归一化状态从该策略的 checkpoint 加载。
-校准候选固定后，源侧始终使用其已归档的物理代码。读取 P0 基准不代表撤销校准；
-校准物理会应用到这个基准上。rollout 不执行 `training/` 配方，也不读取 P1、P2
-保存的 `env.yaml` 来替换环境，因此更换策略不会带入它训练时修改的奖励或课程。
+`--policy-id` 选择策略权重及其观测归一化状态，策略配置从其 `agent.yaml` 加载。
+两侧都从固定 P0 的 `env.yaml` 恢复基础环境。源侧应用请求时工作区 `source/` 的
+物理实现，目标侧应用宿主固定的目标物理。训练奖励和课程由 `training/` 在训练时配置。
+例如，A 训出 P1 后，当前 `source/` 仍是 A，就可以在 A 上观察 P1。把 `source/` 改成 B
+后，同一个源侧 rollout 命令观察的是 P1 在 B 上的表现。
 
 两侧按指定顺序执行，各运行一个完整回合，使用所选的同一 policy 和回合描述。
 同一次请求的两侧共用一个种子。`episode_id` 选择预设回合配置，`seed` 控制
@@ -120,9 +120,10 @@ python scripts/env.py rollout --environments source --policy-id default --episod
 相同种子用于尽量复现采样条件，不保证不同物理实现产生相同轨迹，也不保证
 仿真逐步完全确定；仍应结合实际反馈比较。
 
-校准阶段，每次源 rollout 准备时，宿主保存当前整个 `source/`，取得候选编号，
-再复制一份用于执行。首次训练准备完成后，源 rollout 和训练始终使用固定的
-校准候选；之后修改工作区 `source/` 不会被这些请求采用。
+每次请求源侧 rollout 时，宿主保存当前整个 `source/` 并在这份副本上运行。
+从 `results.source.candidate_id` 读取本次编号。本轮显式训练时传入该编号，
+即可用刚观察的物理版本续训。
+
 `reference/` 不随候选归档或复制到候选运行目录。目标单侧请求不保存源候选。
 一次只提交一个请求，等待返回后再修改 `source/` 或 `training/`，不在后台并发操作。
 
@@ -169,36 +170,30 @@ python scripts/env.py rollout --environments source --policy-id default --episod
 
 ## train：从最新 checkpoint 续训一轮
 
-首次训练从源 rollout 响应的 `results.source.candidate_id` 选择校准候选：
+修改源物理并用当前策略观察后，将此次 `results.source.candidate_id` 传给 `train`。
+例如，若这次返回的是 `c000002`，执行：
 
 ```bash
-python scripts/env.py train --candidate-id <校准候选编号>
+python scripts/env.py train --candidate-id c000002
 ```
 
-首次训练请求准备完成时，宿主固定该物理候选。即使随后的训练失败，候选仍保持
-固定；可通过 `status` 查询。后续训练可以省略候选编号：
+首次训练必须显式传入编号。已有成功登记的续训策略后，省略 `--candidate-id` 会沿用
+`status` 中的 `latest_policy_candidate`。例如，A 训出 P1 后又探测了 B，显式传 B
+是在 B 上从 P1 续训，省略编号则是在 A 上从 P1 续训。
 
-```bash
-python scripts/env.py train
-```
+可以同时指定并行环境数量，例如 `python scripts/env.py train --candidate-id c000002 --num-envs 4096`。
 
-显式指定并行环境数量：
-
-```bash
-python scripts/env.py train --num-envs 4096
-```
-
-- `--candidate-id`：首次训练必填；后续省略则沿用固定候选，显式填写也必须与其一致。
 - `--num-envs`：可选正整数；每次省略均使用默认值 4096，不继承上次命令的参数。
 - 每轮固定新增 1000 iterations，每 100 iterations 保存 checkpoint；不提供
   `--iterations` 或保存间隔参数。
-- 训练只在校准源环境运行，始终从最新成功登记的 checkpoint 继续；不提供
+- 训练在本轮候选的源环境中运行，始终从最新成功登记的 checkpoint 继续；不提供
   `--policy-id`、目标环境训练、rollout 的回合编号或种子参数。
 
 每轮使用提交时的 `training/` 快照。可以直接沿用现有配方，也可以先修改再提交。
-宿主创建校准环境，调用训练入口，登记本轮最后的 checkpoint。策略依次为
+宿主按本轮物理候选创建源环境，调用训练入口，登记本轮最后的 checkpoint。策略依次为
 `default`（P0）→ `p000001`（P1）→ `p000002`（P2）→ …。
-每次请求只训练一轮，不自动执行评价 rollout 或下一轮训练。
+一次 `train` 完成一轮训练。随后可用 `python scripts/env.py rollout --environments target`
+在固定目标环境中观察新策略，也可按需要在当前源环境或两侧探测。
 中间 checkpoint 保留在宿主，不单独分配可选策略编号。
 
 ### 训练反馈
@@ -210,7 +205,7 @@ python scripts/env.py train --num-envs 4096
 | 字段 | 含义 |
 | --- | --- |
 | `ok`、`error`、`diagnostic` | 执行状态和可公开的错误信息 |
-| `candidate_id` | 本轮使用的固定物理候选 |
+| `candidate_id` | 训练本轮策略所用的已归档源物理版本 |
 | `training_candidate_id` | 本轮训练代码快照编号，与物理候选分开归档 |
 | `parent_policy_id` | 本轮开始时加载的策略 |
 | `policy_id` | 本轮成功登记的新策略编号 |
@@ -223,7 +218,7 @@ python scripts/env.py train --num-envs 4096
 
 模型文件和宿主路径不作为客户端可选参数；使用返回的策略编号进行 rollout。
 配置和训练日志按实际产生的内容发布，训练反馈不包含自动评价结果或训练录像。
-训练或策略登记失败时不推进最新策略。若策略已登记但反馈发布失败，最新策略
+训练或策略登记失败时，保留此前成功登记的策略和候选配对。若策略已登记但反馈发布失败，最新策略
 可能已经推进；结合返回的编号和 `status` 判断进度，不因 `ok=false` 自动重训。
 
 ## 源物理模块
@@ -244,8 +239,8 @@ def before_step(env, dt):
 
 `configure(env_cfg)` 在任务 adapter 准备好基础环境配置后、创建环境前调用。
 质量、摩擦等创建时参数在这里设置；具体对象和字段由任务的配置与场景实现
-决定。校准阶段的修改会在下一次源 rollout 新建环境时生效；候选固定后，
-源 rollout 和训练加载该候选的已归档物理代码。
+决定。修改会在下一次源侧 rollout 创建环境时生效。训练加载传给 `train` 的候选编号对应的已归档代码。
+
 每次创建环境时，宿主从固定 P0 环境基准开始，调用一次物理 `configure`；不会
 把上一轮已保存的校准结果作为下一轮基准再叠加一次。训练时，训练配方的
 `configure` 先于物理 `configure` 执行。
@@ -257,7 +252,7 @@ def before_step(env, dt):
 可以在 `source/` 内组织辅助模块，并通过模块名导入。候选所需的辅助代码应放在
 该目录内，不依赖工作区的 `reference/` 路径进行导入。使用已有模拟器接口，
 不修改或重新编译引擎。
-保持固定 policy 的观测与动作约定、控制周期、任务目标、评价规则及录像设置。
+各轮遵循相同的策略观测与动作约定、控制周期、任务目标、评价规则及录像设置。
 
 ## 训练模块
 
@@ -280,7 +275,7 @@ def train(env, agent_cfg, checkpoint, output_dir, iterations) -> dict:
    恢复算法配置 `agent_cfg`，并设置本轮并行环境数量。
 2. 调用当前训练配方的 `configure(env_cfg, agent_cfg)`，按配方调整奖励、课程、
    学习率等。
-3. 宿主将 `agent_cfg.save_interval` 设为 100，应用已固定的校准物理，创建训练环境。
+3. 宿主将 `agent_cfg.save_interval` 设为 100，应用本轮物理候选的配置，创建训练环境。
 4. 将环境和配置交给 `train`，加载最新 checkpoint 继续学习。
 
 初始配方沿用 P0 基准中的奖励和课程，以及最新策略对应的 PPO 参数，可以不修改
@@ -312,37 +307,24 @@ TensorBoard 日志和 `training_complete.json`。其中 `env.yaml` 记录本轮�
 保存，并在本轮结束时保存最后状态。
 
 训练辅助模块放在 `training/` 内，可通过模块名导入，不依赖工作区的 `reference/`
-路径。训练配方可以修改奖励、课程和训练代码，保持固定校准物理、任务目标、
+路径。训练配方可以修改奖励、课程和训练代码，使用本轮候选的物理实现，保持任务目标、
 成功判定、最终评价规则、观测与动作约定及控制周期不变。
 
 ## finish：提交最终候选和最新策略
 
-续训阶段提交固定校准候选和最新成功登记的策略：
+已有成功登记的续训策略时，提交最新策略及训练出它的源候选：
 
 ```bash
 python scripts/env.py finish
 ```
 
-可在 P1 后结束。`finish` 不自动追加训练或 rollout，不采用尚未运行的代码修改，
-不提供选择历史策略作为最终提交的参数。显式传入 `--candidate-id` 时，必须是
-固定的校准候选；若还没有新策略成功登记，最新策略仍为 P0。
+例如，B 训出了 P2，之后即使又做了源侧探测，默认仍提交 P2 和 B。
+显式传入 `--candidate-id` 时，编号必须与 `latest_policy_candidate` 一致。
+`finish` 只提交已有记录并结束会话。
 
-尚未进入续训阶段便需结束时，从已执行的源实验响应中读取
-`results.source.candidate_id`，然后提交：
-
-```bash
-python scripts/env.py finish --candidate-id <候选编号>
-```
-
-提交的是该编号对应的已保存版本，不会重新保存当前 `source/`，也不会自动运行
-额外实验。若在最后一次源实验后又修改了代码，应先执行新版本，再提交新编号。
-候选不存在时请求会被拒绝。候选被接受只表示完成选择，不表示已通过校准评价。
-
-仅在尚未固定校准候选时，不带候选编号的 `finish` 才表示不选择版本直接结束：
-
-```bash
-python scripts/env.py finish
-```
+如果首轮策略尚未成功登记，`finish` 可直接结束会话，最终候选与策略均为空。
+此时也可指定已经归档的源候选与 P0 一起提交，例如 `python scripts/env.py finish --candidate-id c000001`
+（用实际返回的编号替换 `c000001`）。
 
 响应通过 `final_candidate` 和 `final_policy_id` 给出最终提交；未选择候选时两者
 为 `null`。成功结束后停止提交请求，宿主会关闭会话并清理资源。
