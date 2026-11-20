@@ -7,12 +7,15 @@
 
 config 示例（路径由执行端解析）：
     {"checkpoint": "/path/to/model.pt", "params_dir": "/path/to/params",
+     "env_config_path": "/path/to/fixed/env.yaml",
      "device": "cuda:0", "record_video": True}
-params_dir 默认是 checkpoint 同级的 params，必须包含原训练的 env.yaml 和
-agent.yaml。录制视频需要调用方启动应用时启用 --enable_cameras，并安装
+params_dir 默认是 checkpoint 同级的 params，提供所选策略的 agent.yaml。
+env_config_path 独立指定环境配置；省略时使用 params_dir/env.yaml。
+调用方可固定 env_config_path，仅更换 checkpoint 和 params_dir 来运行不同策略。
+录制视频需要调用方启动应用时启用 --enable_cameras，并安装
 imageio/ffmpeg。输出 overview.mp4 和 wrist.mp4；相机仅录像，不进入 policy 观测。
 
-physics=None 使用恢复的训练物理配置；传入物理实现时约定两个方法：
+physics=None 使用 env_config_path 恢复的物理配置；传入物理实现时约定两个方法：
     configure(env_cfg): 在创建环境前修改物理配置。
     before_step(env, dt): 每个物理子步、动作应用后且写入仿真前调用。
 纯参数实现的 before_step 可以为空。这里约定物理实现不持有跨回合隐状态；
@@ -37,6 +40,9 @@ class LiftCubeAdapter:
         self.checkpoint = Path(config["checkpoint"]).expanduser().resolve()
         self.params_dir = Path(
             config.get("params_dir", self.checkpoint.parent / "params")
+        ).expanduser().resolve()
+        self.env_config_path = Path(
+            config.get("env_config_path", self.params_dir / "env.yaml")
         ).expanduser().resolve()
         self.env = None
         self.policy = None
@@ -84,12 +90,12 @@ class LiftCubeAdapter:
             sys.path.insert(0, task_root)
 
     def _load_env_config(self):
-        """沿用 play.py 的配置恢复和旧 checkpoint 资产兼容方式。"""
+        """从独立环境路径恢复配置，沿用 play.py 的恢复和资产兼容方式。"""
         from isaaclab_arena.env_cfg import LiftCubeEnvCfg
         from isaaclab_arena.play import load_config, restore_config
 
         env_cfg = LiftCubeEnvCfg()
-        saved = load_config(self.params_dir / "env.yaml")
+        saved = load_config(self.env_config_path)
         if "usd_path" in saved["scene"]["table"]["spawn"]:
             from isaaclab.sim import UsdFileCfg
 

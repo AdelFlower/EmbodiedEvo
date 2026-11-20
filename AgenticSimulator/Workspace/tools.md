@@ -96,6 +96,13 @@ python scripts/env.py rollout --environments source target --policy-id default -
 初始策略和回合条目由宿主任务配置决定，新策略在本会话训练成功后登记。
 同一策略编号可用于源侧或目标侧 rollout；历史策略可用于对照，续训始终使用最新策略。
 
+切换策略时，环境与策略分别加载：两侧环境均从宿主固定的 P0 `env.yaml` 开始，
+源侧应用当前候选的 `physics.py`，目标侧应用宿主固定的目标物理实现；网络配置
+从所选策略的 `agent.yaml` 读取，权重和观测归一化状态从该策略的 checkpoint 加载。
+校准候选固定后，源侧始终使用其已归档的物理代码。读取 P0 基准不代表撤销校准；
+校准物理会应用到这个基准上。rollout 不执行 `training/` 配方，也不读取 P1、P2
+保存的 `env.yaml` 来替换环境，因此更换策略不会带入它训练时修改的奖励或课程。
+
 两侧按指定顺序执行，各运行一个完整回合，使用所选的同一 policy 和回合描述。
 同一次请求的两侧共用一个种子。`episode_id` 选择预设回合配置，`seed` 控制
 任务定义的随机采样；即使回合编号不变，省略 `--seed` 的新请求也会重新生成种子。
@@ -239,6 +246,9 @@ def before_step(env, dt):
 质量、摩擦等创建时参数在这里设置；具体对象和字段由任务的配置与场景实现
 决定。校准阶段的修改会在下一次源 rollout 新建环境时生效；候选固定后，
 源 rollout 和训练加载该候选的已归档物理代码。
+每次创建环境时，宿主从固定 P0 环境基准开始，调用一次物理 `configure`；不会
+把上一轮已保存的校准结果作为下一轮基准再叠加一次。训练时，训练配方的
+`configure` 先于物理 `configure` 执行。
 
 `before_step(env, dt)` 在每个物理子步中、动作应用之后调用，之后宿主会将场景
 数据写入仿真并推进物理。可通过已有 Isaac Sim / Isaac Lab 接口补充空气阻力等
@@ -264,10 +274,18 @@ def train(env, agent_cfg, checkpoint, output_dir, iterations) -> dict:
     ...
 ```
 
-`configure` 在宿主恢复上一策略对应的环境和算法配置、设置并行环境数量后调用。
-可以在这里调整训练奖励、课程、学习率等。随后宿主将 `agent_cfg.save_interval`
-设为 100，应用固定校准物理并创建环境。初始配方沿用恢复后的奖励、课程和 PPO
-参数，可以不修改直接使用。
+每轮训练按以下顺序准备环境和配方：
+
+1. 从固定 P0 的 `env.yaml` 恢复基础环境配置 `env_cfg`，从最新策略的 `agent.yaml`
+   恢复算法配置 `agent_cfg`，并设置本轮并行环境数量。
+2. 调用当前训练配方的 `configure(env_cfg, agent_cfg)`，按配方调整奖励、课程、
+   学习率等。
+3. 宿主将 `agent_cfg.save_interval` 设为 100，应用已固定的校准物理，创建训练环境。
+4. 将环境和配置交给 `train`，加载最新 checkpoint 继续学习。
+
+初始配方沿用 P0 基准中的奖励和课程，以及最新策略对应的 PPO 参数，可以不修改
+直接使用。要继续沿用自己调整过的奖励或课程，保留 `training/` 中对应的配置代码；
+每轮会在固定基准上重新执行它，不从上一轮保存的 `env.yaml` 自动继承这些改动。
 
 `train` 接收已创建的原生环境 `env`、算法配置 `agent_cfg`、最新策略文件
 `checkpoint`、本轮新的输出目录 `output_dir` 和本轮新增迭代数 `iterations=1000`。
@@ -276,7 +294,9 @@ def train(env, agent_cfg, checkpoint, output_dir, iterations) -> dict:
 创建、关闭由宿主管理，不在入口中重复启动。
 
 初始实现保存最终模型 `model.pt`、配置 `params/env.yaml`、`params/agent.yaml`、
-TensorBoard 日志和 `training_complete.json`。返回字典包含：
+TensorBoard 日志和 `training_complete.json`。其中 `env.yaml` 记录本轮实际训练配置，
+用于查看和分析，不作为后续 rollout 或续训的环境基准；`agent.yaml` 和 checkpoint
+用于加载该策略及继续训练。返回字典包含：
 
 | 字段 | 含义 |
 | --- | --- |

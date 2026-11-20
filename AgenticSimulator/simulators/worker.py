@@ -9,7 +9,10 @@ cfg["experiment"] 中的 adapter、GPU、policy、回合、源/目标物理和�
 cfg["config_dir"] 是原 task.toml 所在目录，由加载器自动记录。policy 文件、
 target.physics 和可选 gpu_lock_dir 等宿主路径以此为基准，不以运行快照目录
 或当前工作目录为基准。source.physics 则相对于本次源候选目录。
-省略 target.physics 时使用 adapter 恢复的固定环境配置。
+源/目标 rollout 和源训练的 env_config_path 均固定使用 policies.default 的
+params/env.yaml，checkpoint 和 agent.yaml 则来自所选策略。源侧在固定基础上
+应用候选物理，训练时另执行当前 training 配方，不从上一轮 env.yaml 重复叠加校准。
+目标侧应用固定 target.physics；省略时直接使用该基础环境。
 默认用当前 session 进程的 sys.executable 启动仿真，因此应在具备 Isaac Sim
 依赖的 Python 环境中启动 session。仅需独立仿真解释器时才配置可选的 python
 路径；不依赖固定的机器目录、Conda 环境名称或 PATH 中的 python 命令。
@@ -185,6 +188,13 @@ class ExperimentExecutor:
                 policy = self._policy(policy_id)
                 settings = self.settings[side]
                 adapter_config = {**settings.get("adapter_config", {}), **policy}
+                # 两侧均从固定基准搭建环境，避免将上一轮已校准的配置再次应用物理改动。
+                # 训练奖励和课程由当前 training 配方设置，策略与算法配置仍使用所选版本。
+                baseline_policy = self._policy("default")
+                baseline_params = Path(baseline_policy.get(
+                    "params_dir", Path(baseline_policy["checkpoint"]).parent / "params",
+                ))
+                adapter_config["env_config_path"] = str(baseline_params / "env.yaml")
                 job.update(
                     adapter=self.adapter, adapter_config=adapter_config,
                     policy_id=policy_id,
