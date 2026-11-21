@@ -48,6 +48,7 @@ auth.json
 /configs/*.local.*
 
 /AgenticSimulator/assets/
+/AgenticSimulator/tasks/strike_ball/assets/
 
 # AgenticSimulator runtime evidence and local trained policy
 /AgenticSimulator/runs/
