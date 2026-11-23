@@ -15,7 +15,7 @@ class PaddleStrike:
     def __init__(self, sim, robot, ball):
         import torch
         from scipy.interpolate import RegularGridInterpolator
-        from .scene import SAMPLE_X, SAMPLE_Z, make_contact_view
+        from .scene import make_contact_view
 
         self.robot = robot
         self.ball = ball
@@ -29,7 +29,7 @@ class PaddleStrike:
         # 在九个击球点用实际碰撞标定的挥拍指令修正量（m/s）。
         # 行对应 z，列对应 x；只修正机械臂指令，球速始终由碰撞产生。
         self.swing_correction = RegularGridInterpolator(
-            ((SAMPLE_Z[0], 0.93, SAMPLE_Z[1]), (SAMPLE_X[0], 0.15, SAMPLE_X[1])),
+            ((0.75, 0.93, 1.11), (-0.05, 0.15, 0.35)),
             [
                 [(0.0257, 0.0168, 0.0465), (0.0439, 0.0272, 0.2147), (-0.0008, 0.0315, 0.1878)],
                 [(0.0848, -0.0313, 0.3041), (0.0383, 0.011, 0.2787), (-0.0047, -0.0016, 0.0936)],

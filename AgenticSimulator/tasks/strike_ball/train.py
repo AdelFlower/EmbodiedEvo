@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--num_envs", type=int, default=4096)
     parser.add_argument("--max_iterations", type=int, default=4000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--action-repeat", type=int, help="Native control steps per PPO decision")
     parser.add_argument("--checkpoint", type=Path, help="Resume PPO with optimizer and observation statistics")
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
@@ -42,10 +43,22 @@ def main():
         agent_cfg = StrikeBallPpoCfg()
         if checkpoint:
             agent_cfg.from_dict(load_yaml(str(checkpoint.parent / "params" / "agent.yaml")))
+        if args.action_repeat is not None:
+            if checkpoint and args.action_repeat != agent_cfg.action_repeat:
+                raise ValueError("A resumed policy must keep its trained action repeat")
+            agent_cfg.action_repeat = args.action_repeat
         agent_cfg.seed, agent_cfg.device = args.seed, args.device
         agent_cfg.max_iterations = args.max_iterations
         env = gym.make(TASK_ID, cfg=cfg)
         try:
+            horizon = env.unwrapped.max_episode_length
+            repeat = agent_cfg.action_repeat
+            if repeat < 1 or horizon % repeat:
+                raise ValueError(f"--action-repeat must divide the {horizon}-step episode")
+            env.unwrapped.action_repeat = repeat
+            if repeat > 1 and not checkpoint:
+                agent_cfg.num_steps_per_env = horizon // repeat
+                agent_cfg.algorithm.gamma **= repeat
             env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
             dump_yaml(str(log_dir / "params/env.yaml"), cfg)
             dump_yaml(str(log_dir / "params/agent.yaml"), agent_cfg)

@@ -140,11 +140,15 @@ class ObservationsCfg:
 @configclass
 class RewardsCfg:
     approach = RewardTermCfg(func=mdp.approach_reward, weight=1., params={"distance_scale": 0.20})
-    hit = RewardTermCfg(func=mdp.paddle_hit_reward, weight=2.)
-    launch = RewardTermCfg(func=mdp.launch_velocity_reward, weight=2., params={"velocity_scale": 1.})
+    swing_preparation = RewardTermCfg(func=mdp.SwingPreparation, weight=3.)
+    hit = RewardTermCfg(func=mdp.paddle_hit_reward, weight=1.)
+    launch_arc = RewardTermCfg(func=mdp.launch_arc_reward, weight=6.)
+    launch_aim = RewardTermCfg(
+        func=mdp.launch_aim_reward, weight=12., params={"coarse_scale": 0.20, "fine_scale": 0.015},
+    )
     hole_distance = RewardTermCfg(func=mdp.hole_distance_reward, weight=1., params={"distance_scale": 0.20})
     board_contact = RewardTermCfg(func=mdp.board_contact_penalty, weight=0.)
-    pass_hole = RewardTermCfg(func=mdp.hole_pass_reward, weight=30.)
+    pass_hole = RewardTermCfg(func=mdp.hole_pass_reward, weight=20.)
 
 
 @configclass
@@ -181,7 +185,7 @@ class StrikeBallEnvCfg(ManagerBasedRLEnvCfg):
     terminations = TerminationsCfg()
     is_finite_horizon = True
     decimation = 4
-    episode_length_s = 5.
+    episode_length_s = 3.
     sim = sim_utils.SimulationCfg(dt=1 / 200, render_interval=decimation)
     viewer = ViewerCfg(
         eye=CAMERA_EYE, lookat=CAMERA_TARGET, resolution=(1920, 1080), origin_type="env", env_index=0,
