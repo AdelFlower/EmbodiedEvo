@@ -7,7 +7,7 @@ import math
 import torch
 from torch import nn
 
-from .ppo_network import JointAdjustment
+from .ppo_network import FrozenStrikeNetwork, JointAdjustment
 from .scene import SAMPLE_X, SAMPLE_Z
 
 
@@ -20,16 +20,30 @@ def aim_return(outcome):
 
 
 class ShotPPO:
-    def __init__(self, device, action_dim):
-        self.actor = JointAdjustment(action_dim).to(device)
+    def __init__(self, device, action_dim, *, actor=None):
+        self.actor = JointAdjustment(action_dim).to(device) if actor is None else actor
         self.critic = nn.Sequential(nn.Linear(2, 64), nn.Tanh(), nn.Linear(64, 1)).to(device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=0.001)
+        self.select_actor_parameters()
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=0.002)
 
+    def select_actor_parameters(self):
+        """Use the same trainable branch when entering a stage or restoring it."""
+        if self.actor.outcome_adjustments:
+            branch = self.actor.outcome_adjustments[-1].policy
+            lr = 0.0004
+        elif self.actor.fine is not None:
+            branch = self.actor.fine
+            lr = 0.0002
+        else:
+            branch = self.actor.net
+            lr = 0.001
+        self.actor.requires_grad_(False)
+        branch.requires_grad_(True)
+        self.actor_optimizer = torch.optim.Adam(branch.parameters(), lr=lr)
+
     def refine(self):
-        self.actor.net.requires_grad_(False)
         self.actor.enable_fine()
-        self.actor_optimizer = torch.optim.Adam(self.actor.fine.parameters(), lr=0.0002)
+        self.select_actor_parameters()
 
     def update(self, start, action, old, reward, sigma, group):
         with torch.no_grad():
@@ -50,7 +64,7 @@ class ShotPPO:
                 gain = torch.minimum(ratio * advantage[ids], ratio.clamp(0.8, 1.2) * advantage[ids])
                 self.actor_optimizer.zero_grad()
                 (-gain.mean()).backward()
-                nn.utils.clip_grad_norm_(self.actor.parameters(), 1.)
+                nn.utils.clip_grad_norm_(self.actor_optimizer.param_groups[0]["params"], 1.)
                 self.actor_optimizer.step()
             with torch.no_grad():
                 kl = 0.5 * ((self.actor(start) - old) / sigma).square().sum(1).mean().item()
@@ -116,15 +130,69 @@ def model_updates(learner, history, sigma, current_start, current_mean, score):
         learner.update(contexts, draws, old, reward, sigma, group)
 
 
-def train_shots(env, base, args, log_dir):
+def train_shots(env, base, args, log_dir, *, checkpoint=None):
+    """Run args.native_updates additional updates in the supplied, already reset environment.
+
+    Standalone training supplies its warmup actor. For continuation, pass base=None
+    and a shot checkpoint to restore the full swing and the active PPO branch.
+    Stage boundaries use cumulative updates. Save intervals use updates in this round.
+    """
     native = env.unwrapped
+    use_env_rewards = bool(native.reward_manager.active_terms)
+    score_contact = args.align_contact and not use_env_rewards
     device, n, steps = native.device, native.num_envs, native.max_episode_length
     group = 32
+    if n < group or n % group or args.native_updates < 1:
+        raise ValueError("Shot PPO needs a positive multiple of 32 environments and at least one update")
+    start_update = 0
+    last_outcome_stage = None
+    training_state = {}
+    if checkpoint is None:
+        scales = torch.tensor([0.035] * 6 + [0.10] * 6 + ([0.035] if args.align_contact else []), device=device)
+        learner = ShotPPO(device, len(scales))
+        half_range = [(high - low) / 2 for low, high in (SAMPLE_X, SAMPLE_Z)]
+        joint_scale = native.cfg.actions.arm.scale
+        episode_seconds = steps * native.step_dt
+        save_interval = 20
+    else:
+        bundle = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        if bundle.get("format") != "strike-ball-ppo-network-v1" or "adjustment" not in bundle:
+            raise ValueError("Shot PPO continuation requires a combined strike checkpoint with joint adjustments")
+        policy = FrozenStrikeNetwork(bundle, device)
+        if policy.actor.feedback is not None or policy.adjustment_basis != "joint-gain":
+            raise ValueError("Expected the open-loop joint-gain policy produced by train_shots")
+        base = policy.actor.requires_grad_(False)
+        scales = policy.adjustment_scale
+        half_range = bundle["ball_half_range"]
+        joint_scale = policy.joint_scale
+        episode_seconds = policy.episode_seconds
+        learner = ShotPPO(device, len(scales), actor=policy.adjustment)
+        start_update = bundle["native_updates"]
+        save_interval = getattr(args, "save_interval", 100)
+        if save_interval < 1:
+            raise ValueError("save_interval must be positive")
+        if "training_state" in bundle:
+            training_state = bundle["training_state"]
+            learner.critic.load_state_dict(training_state["critic"])
+            learner.actor_optimizer.load_state_dict(training_state["actor_optimizer"])
+            learner.critic_optimizer.load_state_dict(training_state["critic_optimizer"])
+            last_outcome_stage = training_state["last_outcome_stage"]
+        else:
+            # Original P0 exports have the policy and update count only. Recover the
+            # exploration schedule from the recipe when its past stages match P0.
+            num_heads = len(learner.actor.outcome_adjustments)
+            if num_heads:
+                past_stages = [stage for stage in args.outcome_after if stage < start_update]
+                if len(past_stages) == num_heads:
+                    last_outcome_stage = past_stages[-1]
+                else:
+                    last_outcome_stage = start_update
+                    print(f"Restarting outcome exploration schedule at update {start_update}", flush=True)
+            print(f"Restored policy at update {start_update}; initializing critic and PPO optimizers", flush=True)
     base.eval()
-    scales = torch.tensor([0.035] * 6 + [0.10] * 6 + ([0.035] if args.align_contact else []), device=device)
-    learner = ShotPPO(device, len(scales))
-    target_substep = None
-    target_distance = None
+    stop_pass_rate = args.stop_pass_rate if checkpoint is None else 0.
+    target_substep = training_state.get("target_substep")
+    target_distance = training_state.get("target_distance")
     native.record_contact_geometry = args.align_contact
 
     def score(outcome):
@@ -134,21 +202,32 @@ def train_shots(env, base, args, log_dir):
             result = result - 0.8 * torch.log1p((outcome[..., 5] / 0.0015).square())
         return result
 
-    half_range = [(high - low) / 2 for low, high in (SAMPLE_X, SAMPLE_Z)]
-    joint_scale = native.cfg.actions.arm.scale
-    seconds = torch.arange(steps, device=device)[None, :, None] * native.step_dt
+    seconds = torch.arange(steps, device=device)[None, :, None] * (episode_seconds / steps)
+    # These local dynamics models describe only the current source physics.
     history = deque(maxlen=48)
 
     def save(name, update):
+        path = log_dir / name
+        temporary = path.with_suffix(".pt.tmp")
         torch.save({
             "format": "strike-ball-ppo-network-v1", "actor": base.state_dict(),
+            "spatial_refinement": base.refinement is not None,
             "adjustment": learner.actor.state_dict(), "adjustment_scale": scales.tolist(),
             "adjustment_basis": "joint-gain",
             "fine_adjustment": learner.actor.fine is not None,
             "outcome_adjustments": len(learner.actor.outcome_adjustments),
             "joint_action_scale": joint_scale, "ball_half_range": half_range,
-            "episode_seconds": steps * native.step_dt, "seed": args.seed, "native_updates": update,
-        }, log_dir / name)
+            "episode_seconds": episode_seconds, "seed": args.seed, "native_updates": update,
+            "round_updates": update - start_update,
+            "training_state": {
+                "critic": learner.critic.state_dict(),
+                "actor_optimizer": learner.actor_optimizer.state_dict(),
+                "critic_optimizer": learner.critic_optimizer.state_dict(),
+                "last_outcome_stage": last_outcome_stage,
+                "target_substep": target_substep, "target_distance": target_distance,
+            },
+        }, temporary)
+        temporary.replace(path)
 
     def rollout(group_size, sigma, measure_outcomes=False):
         nonlocal target_substep, target_distance
@@ -173,14 +252,17 @@ def train_shots(env, base, args, log_dir):
         controls = action * scales
         bias, gain = controls[:, :12].split(6, dim=1)
         clock = seconds.expand(n, -1, -1)
-        if args.align_contact:
-            clock = (clock + controls[:, None, 12:]).clamp(0., steps * native.step_dt)
+        if scales.numel() == 13:
+            clock = (clock + controls[:, None, 12:]).clamp(0., episode_seconds)
         joints = base(start[:, None, :].expand(-1, steps, -1), clock)
         commands = (joints + gain[:, None, :] * joints + bias[:, None, :]) / joint_scale
         measured = state.new_ones((n, 4))
         released = torch.zeros(n, dtype=torch.bool, device=device)
+        episode_reward = state.new_zeros((n,)) if use_env_rewards else None
         for step in range(steps):
-            _, _, _, _, extras = env.step(commands[:, step])
+            _, step_reward, _, _, extras = env.step(commands[:, step])
+            if use_env_rewards:
+                episode_reward.add_(step_reward)
             offset = native.launch_entrance_offset_this_step
             event = offset.isfinite().all(dim=1)
             measured[:, :3] = torch.where(event[:, None], offset, measured[:, :3])
@@ -190,7 +272,7 @@ def train_shots(env, base, args, log_dir):
         if measure_outcomes:
             return (start, measured[:, :2], shot["contact_substep"].float(), shot["contact_plane_distance"],
                     shot["passed"], released)
-        if args.align_contact:
+        if score_contact:
             contact = shot["contact_substep"]
             distance = shot["contact_plane_distance"]
             if target_substep is None:
@@ -198,14 +280,17 @@ def train_shots(env, base, args, log_dir):
                 target_distance = distance[shot["hit"]].median().item()
             timing = native.physics_dt * (contact - target_substep)
             measured = torch.cat((measured, timing[:, None], (distance - target_distance)[:, None]), dim=1)
-        return start, mean, noise, action, measured, released, shot["hit"], shot["passed"]
+        if not use_env_rewards:
+            episode_reward = score(measured) + 3.5 * shot["passed"].float() - 2. * (~released)
+        return start, mean, noise, action, measured, released, episode_reward, shot["hit"], shot["passed"]
 
-    save("warmup.pt", 0)
-    last_outcome_stage = None
+    if checkpoint is None:
+        save("warmup.pt", 0)
     with (log_dir / "training.jsonl").open("x") as log:
-        for it in range(args.native_updates):
+        for round_update in range(1, args.native_updates + 1):
+            it = start_update + round_update - 1
             forecast_metrics = {}
-            if it == args.fine_after:
+            if it == args.fine_after and learner.actor.fine is None and not learner.actor.outcome_adjustments:
                 learner.refine()
             sigma = max(0.008, 0.8 * math.exp(-it / 32))
             if it in args.outcome_after:
@@ -230,49 +315,53 @@ def train_shots(env, base, args, log_dir):
                     forecast_metrics["repeat_median_difference_mm"] = 1000. * duplicate_error.median().item()
                     forecast_metrics["repeat_p90_difference_mm"] = 1000. * duplicate_error.quantile(0.9).item()
                 print(json.dumps(forecast_metrics), flush=True)
-                learner.actor_optimizer = torch.optim.Adam(layer.policy.parameters(), lr=0.0004)
+                learner.select_actor_parameters()
                 history.clear()
                 last_outcome_stage = it
             if last_outcome_stage is not None:
                 sigma = max(0.005, 0.045 * math.exp(-(it - last_outcome_stage) / 30))
             with torch.no_grad():
-                start, old, noise, action, measured, released, hit, passed = rollout(group, sigma)
-                reward = score(measured) + 3.5 * passed.float() - 2. * (~released)
+                start, old, noise, action, measured, released, reward, hit, passed = rollout(group, sigma)
             kl = learner.update(start, action, old, reward, sigma, group)
-            with torch.no_grad():
-                fit, usable, residual = fit_forward_models(noise, measured, released, group)
-                if usable.any():
-                    position = start[::group][usable]
-                    history.append((position, old[::group][usable], torch.full_like(position[:, :1], sigma), fit[usable]))
-            if history:
-                model_updates(learner, history, sigma, start[::group], old[::group], score)
             count = it + 1
             miss, slope = measured[:, :3].norm(dim=1), measured[:, 3] / 0.15
             record = {
-                "update": count, "episodes": n, "hits": int(hit.sum()), "passes": int(passed.sum()),
+                "update": count, "round_update": round_update, "episodes": n,
+                "hits": int(hit.sum()), "passes": int(passed.sum()),
                 "mean_shot_reward": reward.mean().item(),
                 "median_predicted_miss_mm": 1000 * miss.median().item(),
                 "median_descent_slope": slope.median().item(), "kl": kl, "noise_std": sigma,
-                "median_model_error_mm": 1000 * residual.median().item(), "usable_models": int(usable.sum()),
             }
+            # Local models predict shot outcomes; arbitrary environment rewards require a real rollout.
+            if not use_env_rewards:
+                with torch.no_grad():
+                    fit, usable, residual = fit_forward_models(noise, measured, released, group)
+                    if usable.any():
+                        position = start[::group][usable]
+                        history.append((position, old[::group][usable], torch.full_like(position[:, :1], sigma), fit[usable]))
+                if history:
+                    model_updates(learner, history, sigma, start[::group], old[::group], score)
+                record.update(median_model_error_mm=1000 * residual.median().item(), usable_models=int(usable.sum()))
             if forecast_metrics:
                 record["frozen_outcome_prediction"] = forecast_metrics
-            if args.align_contact:
+            if score_contact:
                 record.update(target_contact_substep=target_substep,
                               median_contact_error_ms=1000. * measured[hit, 4].abs().median().item(),
                               target_contact_plane_mm=1000. * target_distance,
                               median_contact_plane_error_mm=1000. * measured[hit, 5].abs().median().item())
             target_met = False
-            if count % 20 == 0 or count == args.native_updates:
+            final_update = round_update == args.native_updates
+            if round_update % save_interval == 0 or final_update:
                 save(f"network_{count}.pt", count)
+            if count % 20 == 0 or final_update:
                 with torch.no_grad():
                     validation = rollout(1, 0.)
                     cleared = validation[-1]
                     record.update(validation_episodes=n, validation_passes=int(cleared.sum()))
-                    if args.stop_pass_rate and record["validation_passes"] / n >= args.stop_pass_rate:
+                    if stop_pass_rate and record["validation_passes"] / n >= stop_pass_rate:
                         confirmation = rollout(1, 0.)[-1]
                         record.update(confirmation_episodes=n, confirmation_passes=int(confirmation.sum()))
-                        target_met = record["confirmation_passes"] / n >= args.stop_pass_rate
+                        target_met = record["confirmation_passes"] / n >= stop_pass_rate
                         record["stop_target_met"] = target_met
             line = json.dumps(record)
             print(line, file=log, flush=True)

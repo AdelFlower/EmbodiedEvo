@@ -97,7 +97,7 @@ python scripts/env.py rollout --environments source target --policy-id default -
 初始策略和回合条目由宿主任务配置决定，新策略在本会话训练成功后登记。
 同一策略编号可用于源侧或目标侧 rollout；历史策略可用于对照，续训始终使用最新策略。
 
-`--policy-id` 选择策略权重及其观测归一化状态，策略配置从其 `agent.yaml` 加载。
+`--policy-id` 指定本次回放使用的策略。任务适配器负责加载该策略所需的权重和配置。
 两侧都从固定 P0 的 `env.yaml` 恢复基础环境。源侧应用请求时工作区 `source/` 的
 物理实现，目标侧应用宿主固定的目标物理。训练奖励和课程由 `training/` 在训练时配置。
 例如，A 训出 P1 后，当前 `source/` 仍是 A，就可以在 A 上观察 P1。把 `source/` 改成 B
@@ -184,6 +184,7 @@ python scripts/env.py train --candidate-id c000002
 可以同时指定并行环境数量，例如 `python scripts/env.py train --candidate-id c000002 --num-envs 4096`。
 
 - `--num-envs`：可选正整数；每次省略均使用默认值 4096，不继承上次命令的参数。
+  手动指定时，并行环境数还需满足当前任务的训练要求，详见 `reference/README.md`。
 - 每轮固定新增 1000 iterations，每 100 iterations 保存 checkpoint；不提供
   `--iterations` 或保存间隔参数。
 - 训练在本轮候选的源环境中运行，始终从最新成功登记的 checkpoint 继续；不提供
@@ -246,7 +247,7 @@ def before_step(env, dt):
 `configure` 先于物理 `configure` 执行。
 
 `before_step(env, dt)` 在每个物理子步中、动作应用之后调用，之后宿主会将场景
-数据写入仿真并推进物理。可通过已有 Isaac Sim / Isaac Lab 接口补充空气阻力等
+数据写入仿真并推进物理。可通过已有 Isaac Sim / Isaac Lab 接口补充新物理机制的
 逐步物理作用。纯参数修改可以保持此函数为空；实现不依赖跨回合隐状态。
 
 可以在 `source/` 内组织辅助模块，并通过模块名导入。候选所需的辅助代码应放在
@@ -284,14 +285,14 @@ def train(env, agent_cfg, checkpoint, output_dir, iterations) -> dict:
 
 `train` 接收已创建的原生环境 `env`、算法配置 `agent_cfg`、最新策略文件
 `checkpoint`、本轮新的输出目录 `output_dir` 和本轮新增迭代数 `iterations=1000`。
-初始实现复用 RSL-RL PPO，恢复模型、观测归一化和优化器状态，使用本轮配置的
-学习率。训练入口负责环境包装、学习、保存和日志写入；仿真应用和原生环境的
-创建、关闭由宿主管理，不在入口中重复启动。
+训练入口从传入的 `checkpoint` 加载策略，按 `iterations` 指定的次数继续训练。
+具体训练算法和可恢复的训练状态由当前任务的训练配方和权重文件决定。
+训练入口负责学习、保存和记录日志，宿主负责创建和关闭仿真应用及原生环境。
 
-初始实现保存最终模型 `model.pt`、配置 `params/env.yaml`、`params/agent.yaml`、
-TensorBoard 日志和 `training_complete.json`。其中 `env.yaml` 记录本轮实际训练配置，
-用于查看和分析，不作为后续 rollout 或续训的环境基准；`agent.yaml` 和 checkpoint
-用于加载该策略及继续训练。返回字典包含：
+训练入口在 `output_dir` 中保存本轮最终权重和配置，并通过 `checkpoint` 返回权重文件路径。
+权重文件名和训练日志格式由当前任务的训练配方决定。`params/env.yaml` 记录本轮实际使用的环境配置，
+后续回放和续训仍使用固定 P0 的环境基准。`params/agent.yaml` 保存供后续续训读取的训练配置。
+返回字典包含以下字段。
 
 | 字段 | 含义 |
 | --- | --- |

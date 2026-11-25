@@ -1,0 +1,55 @@
+workspace_template = "../../Workspace"
+source_root = "source"
+
+[task]
+name = "strike_ball"
+description = "从 P0 开始比较源环境和固定目标环境中的击球表现。每次修改源物理后，用当前策略回放并在该源候选上从最新权重续训，再根据目标侧公开反馈判断球是否被球拍击中并完整穿孔。"
+
+[agent]
+preset = "codex"
+model = "gpt-6-astra"
+reasoning_effort = "xhigh"
+image = "embodiedevo-agent:latest"
+network = "agenticsimulator-agent"
+cpus = 4
+memory_mb = 8192
+
+[session]
+startup_timeout_sec = 120
+execution_timeout_sec = 1200
+source_budget = 500
+target_budget = 500
+
+[experiment]
+adapter = "AgenticSimulator.tasks.strike_ball.adapter:StrikeBallAdapter"
+gpus = [0]
+per_gpu = 1
+
+[experiment.policies.default]
+checkpoint = "policy/network.pt"
+params_dir = "policy/params"
+
+[experiment.training]
+# 相对于本轮 training/ 快照。
+entry = "train.py"
+
+# 回合 0 使用原生初态采样，双侧回放共用请求种子。
+[[experiment.episodes]]
+
+[experiment.source]
+# 相对于本轮源物理候选快照。
+physics = "physics.py"
+
+[experiment.source.adapter_config]
+record_video = true
+
+[experiment.target]
+# 相对于本任务文件，由宿主加载。
+physics = "target/physics.py"
+
+[experiment.target.adapter_config]
+record_video = true
+
+[experiment.target_feedback]
+fields = ["steps", "step_dt"]
+artifacts = ["videos.overview", "videos.wrist"]

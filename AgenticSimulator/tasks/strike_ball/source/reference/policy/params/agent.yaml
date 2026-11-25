@@ -1,0 +1,7 @@
+seed: 42
+align_contact: true
+fine_after: -1
+outcome_after: [120, 220, 320]
+outcome_samples: 49152
+prioritize_misses: true
+stop_pass_rate: 0.0
