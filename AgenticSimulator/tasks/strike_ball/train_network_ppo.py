@@ -72,7 +72,7 @@ def main():
                         help="Number of frozen native shots used to fit each landing predictor")
     parser.add_argument("--prioritize-misses", action=argparse.BooleanOptionalAction, default=None,
                         help="During outcome refinement, sample more starts where the frozen predictor expects a miss")
-    parser.add_argument("--stop-pass-rate", type=float, default=0.97,
+    parser.add_argument("--stop-pass-rate", type=float, default=0.85,
                         help="Finish native updates when two fresh full-range batches meet this rate (0 disables)")
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
