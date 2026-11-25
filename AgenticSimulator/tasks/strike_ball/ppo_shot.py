@@ -19,26 +19,6 @@ def aim_return(outcome):
     return -torch.log1p(error2 / 0.003**2) - 1.5 * torch.log1p(shallow.square())
 
 
-def launch_metrics(state, gravity_z, dt):
-    position, scaled_velocity = state.split(3, dim=-1)
-    velocity = scaled_velocity / 0.18
-    vz = velocity[..., 2] + 0.5 * gravity_z * dt
-    discriminant = vz.square() - 2 * gravity_z * position[..., 2]
-    fall = discriminant.clamp_min(0.).sqrt()
-    descending = ((vz + fall) / -gravity_z).clamp_min(0.)
-    apex = (vz / -gravity_z).clamp_min(0.)
-    flight = torch.where(discriminant >= 0, descending, apex)
-    xy = position[..., :2] + velocity[..., :2] * flight.unsqueeze(-1)
-    height = position[..., 2] + (vz + 0.5 * gravity_z * flight) * flight
-    miss = torch.sqrt(xy.square().sum(-1) + height.square())
-    slope = velocity[..., :2].norm(dim=-1) / fall.clamp_min(0.4)
-    target = -position / 0.70
-    target[..., 2] -= 0.5 * gravity_z * (0.70 + dt)
-    speed_error2 = (velocity - target).square().sum(-1)
-    score = -torch.log1p((miss / 0.003).square()) - 1.8 * torch.log1p(speed_error2 / 0.35**2)
-    return miss, slope, score
-
-
 class ShotPPO:
     def __init__(self, device, action_dim):
         self.actor = JointAdjustment(action_dim).to(device)
@@ -88,15 +68,13 @@ class ShotPPO:
         return kl
 
 
-def fit_forward_models(noise, measured, released, group, launch_model):
+def fit_forward_models(noise, measured, released, group):
     """Predict physical shot outcomes from sampled actions at each training position."""
     inputs = noise.view(-1, group, noise.shape[-1])
     design = torch.cat((torch.ones_like(inputs[:, :, :1]), inputs), dim=2)
     outcomes = measured.view(-1, group, measured.shape[-1]).clamp(-1.5, 1.5)
     valid = released.view(-1, group, 1)
     eye = torch.eye(design.shape[-1], device=noise.device)
-    if launch_model:
-        eye[0, 0] = 0.0001
 
     def fit(count):
         x = design[:, :count] * valid[:, :count]
@@ -107,8 +85,6 @@ def fit_forward_models(noise, measured, released, group, launch_model):
     predicted = design[:, train_count:] @ fit(train_count)
     residual = (predicted - heldout).norm(dim=2).median(1).values
     miss = heldout[:, :, :3].norm(dim=2).median(1).values
-    if launch_model:
-        miss = (heldout - heldout.median(dim=1, keepdim=True).values).norm(dim=2).median(1).values
     usable = (valid.float().mean(1).squeeze(-1) > 0.88) & (residual < 0.003 + 0.8 * miss)
     return fit(group), usable, residual
 
@@ -145,18 +121,13 @@ def train_shots(env, base, args, log_dir):
     device, n, steps = native.device, native.num_envs, native.max_episode_length
     group = 32
     base.eval()
-    launch_model = args.native_method == "launch-model"
-    scales = torch.tensor([0.035] * 6 + [0.14 if launch_model else 0.10] * 6
-                          + ([0.035] if args.align_contact else []), device=device)
+    scales = torch.tensor([0.035] * 6 + [0.10] * 6 + ([0.035] if args.align_contact else []), device=device)
     learner = ShotPPO(device, len(scales))
     target_substep = None
     target_distance = None
     native.record_contact_geometry = args.align_contact
-    gravity_z = native.gravity[2]
 
     def score(outcome):
-        if launch_model:
-            return launch_metrics(outcome, gravity_z, native.physics_dt)[2]
         result = aim_return(outcome)
         if args.align_contact:
             result = result - 1.6 * torch.log1p((outcome[..., 4] / 0.006).square())
@@ -172,7 +143,7 @@ def train_shots(env, base, args, log_dir):
         torch.save({
             "format": "strike-ball-ppo-network-v1", "actor": base.state_dict(),
             "adjustment": learner.actor.state_dict(), "adjustment_scale": scales.tolist(),
-            "adjustment_basis": "clock" if launch_model else "joint-gain",
+            "adjustment_basis": "joint-gain",
             "fine_adjustment": learner.actor.fine is not None,
             "outcome_adjustments": len(learner.actor.outcome_adjustments),
             "joint_action_scale": joint_scale, "ball_half_range": half_range,
@@ -205,21 +176,16 @@ def train_shots(env, base, args, log_dir):
         if args.align_contact:
             clock = (clock + controls[:, None, 12:]).clamp(0., steps * native.step_dt)
         joints = base(start[:, None, :].expand(-1, steps, -1), clock)
-        basis = (math.pi * clock).sin() if launch_model else joints
-        commands = (joints + gain[:, None, :] * basis + bias[:, None, :]) / joint_scale
-        measured = state.new_ones((n, 6 if launch_model else 4))
+        commands = (joints + gain[:, None, :] * joints + bias[:, None, :]) / joint_scale
+        measured = state.new_ones((n, 4))
         released = torch.zeros(n, dtype=torch.bool, device=device)
         for step in range(steps):
             _, _, _, _, extras = env.step(commands[:, step])
-            event = native.launch_entrance_error_this_step.isfinite()
-            if launch_model:
-                measured = torch.where(event[:, None], native.launch_state_this_step, measured)
-            else:
-                measured[:, :3] = torch.where(event[:, None], native.launch_entrance_offset_this_step, measured[:, :3])
-                measured[:, 3] = torch.where(event, 0.15 * native.launch_descent_slope_this_step, measured[:, 3])
+            offset = native.launch_entrance_offset_this_step
+            event = offset.isfinite().all(dim=1)
+            measured[:, :3] = torch.where(event[:, None], offset, measured[:, :3])
+            measured[:, 3] = torch.where(event, 0.15 * native.launch_descent_slope_this_step, measured[:, 3])
             released |= event
-        if launch_model:
-            measured[:, 3:] *= 0.18
         shot = extras["shot"]
         if measure_outcomes:
             return (start, measured[:, :2], shot["contact_substep"].float(), shot["contact_plane_distance"],
@@ -274,28 +240,23 @@ def train_shots(env, base, args, log_dir):
                 reward = score(measured) + 3.5 * passed.float() - 2. * (~released)
             kl = learner.update(start, action, old, reward, sigma, group)
             with torch.no_grad():
-                fit, usable, residual = fit_forward_models(noise, measured, released, group, launch_model)
+                fit, usable, residual = fit_forward_models(noise, measured, released, group)
                 if usable.any():
                     position = start[::group][usable]
                     history.append((position, old[::group][usable], torch.full_like(position[:, :1], sigma), fit[usable]))
             if history:
                 model_updates(learner, history, sigma, start[::group], old[::group], score)
             count = it + 1
-            if launch_model:
-                miss, slope, _ = launch_metrics(measured, gravity_z, native.physics_dt)
-            else:
-                miss, slope = measured[:, :3].norm(dim=1), measured[:, 3] / 0.15
+            miss, slope = measured[:, :3].norm(dim=1), measured[:, 3] / 0.15
             record = {
                 "update": count, "episodes": n, "hits": int(hit.sum()), "passes": int(passed.sum()),
+                "mean_shot_reward": reward.mean().item(),
                 "median_predicted_miss_mm": 1000 * miss.median().item(),
                 "median_descent_slope": slope.median().item(), "kl": kl, "noise_std": sigma,
                 "median_model_error_mm": 1000 * residual.median().item(), "usable_models": int(usable.sum()),
             }
             if forecast_metrics:
                 record["frozen_outcome_prediction"] = forecast_metrics
-            if args.prioritize_misses and last_outcome_stage is not None:
-                low = start[:, 1] < 0.
-                record.update(training_low=int(low.sum()), training_low_passes=int((low & passed).sum()))
             if args.align_contact:
                 record.update(target_contact_substep=target_substep,
                               median_contact_error_ms=1000. * measured[hit, 4].abs().median().item(),
@@ -306,10 +267,8 @@ def train_shots(env, base, args, log_dir):
                 save(f"network_{count}.pt", count)
                 with torch.no_grad():
                     validation = rollout(1, 0.)
-                    low = validation[0][:, 1] < 0.
                     cleared = validation[-1]
-                    record.update(validation_episodes=n, validation_passes=int(cleared.sum()),
-                                  validation_low=int(low.sum()), validation_low_passes=int((cleared & low).sum()))
+                    record.update(validation_episodes=n, validation_passes=int(cleared.sum()))
                     if args.stop_pass_rate and record["validation_passes"] / n >= args.stop_pass_rate:
                         confirmation = rollout(1, 0.)[-1]
                         record.update(confirmation_episodes=n, confirmation_passes=int(confirmation.sum()))

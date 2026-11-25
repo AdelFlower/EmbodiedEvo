@@ -13,7 +13,7 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg, ViewerCfg
 from isaaclab.managers import (
-    EventTermCfg, ObservationGroupCfg, ObservationTermCfg, RewardTermCfg, SceneEntityCfg, TerminationTermCfg,
+    EventTermCfg, ObservationGroupCfg, ObservationTermCfg, SceneEntityCfg, TerminationTermCfg,
 )
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import ArticulationRootPropertiesCfg, CollisionPropertiesCfg, RigidBodyPropertiesCfg, UsdFileCfg
@@ -138,20 +138,6 @@ class ObservationsCfg:
 
 
 @configclass
-class RewardsCfg:
-    approach = RewardTermCfg(func=mdp.approach_reward, weight=1., params={"distance_scale": 0.20})
-    swing_preparation = RewardTermCfg(func=mdp.SwingPreparation, weight=3.)
-    hit = RewardTermCfg(func=mdp.paddle_hit_reward, weight=1.)
-    launch_arc = RewardTermCfg(func=mdp.launch_arc_reward, weight=6.)
-    launch_aim = RewardTermCfg(
-        func=mdp.launch_aim_reward, weight=12., params={"coarse_scale": 0.20, "fine_scale": 0.015},
-    )
-    hole_distance = RewardTermCfg(func=mdp.hole_distance_reward, weight=1., params={"distance_scale": 0.20})
-    board_contact = RewardTermCfg(func=mdp.board_contact_penalty, weight=0.)
-    pass_hole = RewardTermCfg(func=mdp.hole_pass_reward, weight=20.)
-
-
-@configclass
 class EventsCfg:
     reset_robot = EventTermCfg(
         func=lab_mdp.reset_joints_by_offset, mode="reset",
@@ -180,7 +166,8 @@ class StrikeBallEnvCfg(ManagerBasedRLEnvCfg):
     scene = StrikeSceneCfg(num_envs=4096, env_spacing=5., replicate_physics=True)
     actions = ActionsCfg()
     observations = ObservationsCfg()
-    rewards = RewardsCfg()
+    # Warmup scores paddle motion; shot PPO scores completed strikes.
+    rewards = {}
     events = EventsCfg()
     terminations = TerminationsCfg()
     is_finite_horizon = True

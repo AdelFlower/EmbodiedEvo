@@ -17,8 +17,8 @@ BALL_RADIUS = 0.020
 CONTACT_OFFSET = 0.00025
 SAMPLE_Y = -0.90
 PADDLE_OFFSET = (0.0, 0.265, 0.0)
-CAMERA_EYE = (1.80, -2.45, 1.88)
-CAMERA_TARGET = (0.15, -1.20, 1.46)
+CAMERA_EYE = (1.35878, -2.06804, 1.67360)
+CAMERA_TARGET = (0.25352, -1.28109, 1.03735)
 SAMPLE_X = (-0.05, 0.35)
 SAMPLE_Z = (HOLE_CENTER[2] + BOARD_THICKNESS / 2, 1.11)
 
@@ -139,15 +139,6 @@ def make_contact_view(robot, root_pattern):
     if contacts.sensor_count != robot.num_instances or contacts.filter_count != 1:
         raise RuntimeError("Expected one ball/wrist contact pair per environment")
     return view, contacts
-
-
-def make_board_contact_view(view, root_pattern, num_envs):
-    # Each static convex collider is a separate PhysX actor.
-    wedges = [f"{root_pattern}/TargetBoard/Wedge_{i:02d}" for i in range(BOARD_SEGMENTS)]
-    contacts = view.create_rigid_contact_view(f"{root_pattern}/Ball/Ball", filter_patterns=wedges)
-    if contacts.sensor_count != num_envs or contacts.filter_count != BOARD_SEGMENTS:
-        raise RuntimeError("Expected each ball to track all colliders of its own target board")
-    return contacts
 
 
 def paddle_contacts(contacts, robot, wrist):
